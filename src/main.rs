@@ -18,6 +18,13 @@ struct Args {
     name_type_location_filename: String,
 }
 
+struct Fasta<'a> {
+    id:&'a str,
+    desc:&'a str,
+    seq:String,
+    
+}
+
 fn main() {
 
     let args = Args::parse();
@@ -52,9 +59,50 @@ fn main() {
     let number_of_vcfs = name_type_location_hash.len();
     println!("{} VCF files specified", number_of_vcfs);
 
+    // Read FASTA file to memory
     println!("Processing file: {}", args.fasta_filename);
+    let fasta_file = fs::read_to_string(&args.fasta_filename).unwrap_or_else(|error|{
+        println!("Error with file: {} {}", args.fasta_filename, error);
+        process::exit(1);
+    });
 
-    
+    // separate out the columns
+    let mut last_id = "";
+    let mut last_desc = "";
+    let mut last_sequence = String::from("");
+    let mut fasta: Vec<Fasta> = Vec::new();
+    for line in fasta_file.lines() {
+
+        // ID and Description
+        if line.starts_with(">") {
+            if last_id != "" {
+                fasta.push(Fasta { id: last_id, desc: last_desc, seq: last_sequence });
+            }
+            last_sequence = String::from("");
+
+            match line.find(" ") {
+                Some(index) => {
+                    last_id = &line[1..index];
+                    last_desc = &line[index+1..];
+                },
+                None => { 
+                    last_id = &line[1..];
+                    last_desc = "";
+                }
+            };
+            //println!("id and desc: {} {}", last_id, last_desc);
+        }
+        else {
+            last_sequence.push_str(line);
+        }
+    }
+    fasta.push(Fasta { id: last_id, desc: last_desc, seq: last_sequence }); 
+    println!("Finished processing file");
+
+    for entry in fasta {
+        println!("id and desc: {} {}", entry.id, entry.desc);
+        println!("length of seq: {}", entry.seq.len());
+    }
     
     println!("Hello, ecatools world!");
 }
