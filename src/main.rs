@@ -3,11 +3,14 @@ use std::fs;
 use std::process;
 use std::path::Path;
 use std::collections::HashMap;
+mod logger;
+use logger::Logger;
 
 // setting up the command line parameters
 #[derive(Parser)]
 #[command(name = "RustaTools")]
 #[command(about = "A simple command-line tool fopr calculating Entirely Covered in All sites", long_about = None)]
+
 struct Args {
     /// reference FASTA
     #[arg(short='f', long="fasta")]
@@ -18,22 +21,19 @@ struct Args {
     name_type_location_filename: String,
 }
 
-struct Fasta<'a> {
-    id:&'a str,
-    desc:&'a str,
+struct Fasta {
+    id:String,
+    desc:String,
     seq:String,
-    
 }
 
-fn main() {
+fn read_name_type_location_file(file : String, logger : &Logger) -> HashMap<String, String> {
+    logger.information(&format!("Processing file: {}", file));
 
-    let args = Args::parse();
-    let mut name_type_location_hash: HashMap<&str, &str> = HashMap::new();
+    let mut name_type_location_hash: HashMap<String, String> = HashMap::new();
 
-    // Read Name Type Location file
-    println!("Processing file: {}", args.name_type_location_filename);
-    let content = fs::read_to_string(&args.name_type_location_filename).unwrap_or_else(|error|{
-        println!("Error with file: {} {}", args.name_type_location_filename, error);
+    let content = fs::read_to_string(&file).unwrap_or_else(|error|{
+        logger.error(&format!("Error with file: {} {}", file, error));
         process::exit(1);
     });
 
@@ -43,26 +43,28 @@ fn main() {
 
         // check there are 3 columns
         if line_parts.len() != 3 {
-            println!("Error with format of file: {} on line number {} = {}", args.name_type_location_filename, index, line);
+            logger.error(&format!("Error with format of file: {} on line number {} = {}", file, index, line));
             process::exit(1);
         }
 
         // check files exist
         if !Path::new(line_parts[2]).exists() {
-            println!("Error: File {} does not exist", line_parts[2]);
+            logger.error(&format!("Error: File {} does not exist", line_parts[2]));
             process::exit(1);
         }
 
         // save into hash map
-        name_type_location_hash.insert(line_parts[0], line_parts[2]);
+        name_type_location_hash.insert(line_parts[0].to_string(), line_parts[2].to_string());
     }
-    let number_of_vcfs = name_type_location_hash.len();
-    println!("{} VCF files specified", number_of_vcfs);
+    return name_type_location_hash;
+}
 
-    // Read FASTA file to memory
-    println!("Processing file: {}", args.fasta_filename);
-    let fasta_file = fs::read_to_string(&args.fasta_filename).unwrap_or_else(|error|{
-        println!("Error with file: {} {}", args.fasta_filename, error);
+fn read_fasta(file : String, logger : &Logger) -> Vec<Fasta> {
+    println!("Processing file: {}", file);
+
+    // read file
+    let fasta_file = fs::read_to_string(&file).unwrap_or_else(|error|{
+        logger.error(&format!("Error with file: {} {}", file, error));
         process::exit(1);
     });
 
@@ -76,7 +78,7 @@ fn main() {
         // ID and Description
         if line.starts_with(">") {
             if last_id != "" {
-                fasta.push(Fasta { id: last_id, desc: last_desc, seq: last_sequence });
+                fasta.push(Fasta { id: last_id.to_string(), desc: last_desc.to_string(), seq: last_sequence });
             }
             last_sequence = String::from("");
 
@@ -96,13 +98,33 @@ fn main() {
             last_sequence.push_str(line);
         }
     }
-    fasta.push(Fasta { id: last_id, desc: last_desc, seq: last_sequence }); 
-    println!("Finished processing file");
+    fasta.push(Fasta { id: last_id.to_string(), desc: last_desc.to_string(), seq: last_sequence }); 
+    logger.information("Finished processing file");
 
+    return fasta;
+}
+
+fn main() {
+
+    let args = Args::parse();
+    let logger = Logger;
+
+    // Read Name Type Location file
+    let name_type_location_hash = read_name_type_location_file(args.name_type_location_filename, &logger);
+
+    // Info about VCF's
+    let number_of_vcfs = name_type_location_hash.len();
+    println!("{} VCF files specified", number_of_vcfs);
+
+    // Read FASTA file to memory
+    let fasta = read_fasta(args.fasta_filename, &logger);
+
+    // go through entries
     for entry in fasta {
-        println!("id and desc: {} {}", entry.id, entry.desc);
-        println!("length of seq: {}", entry.seq.len());
+        logger.information(&format!("id and desc: {} {}", entry.id, entry.desc));
+        logger.information(&format!("length of seq: {}", entry.seq.len()));
     }
-    
-    println!("Hello, ecatools world!");
+
+    logger.output("output test");
+    logger.warning("output test");
 }
