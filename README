@@ -1,0 +1,5 @@
+
+Getting started / example pipeline:
+
+cargo run -- --fasta examples/Cryp_gatt_R265.genome.fa-scaffold3.14.fasta --name_type_location examples/Name_Type
+_location.tab
