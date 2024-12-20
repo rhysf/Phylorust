@@ -104,6 +104,116 @@ fn read_fasta(file : String, logger : &Logger) -> Vec<Fasta> {
     return fasta;
 }
 
+//sub make_genome_hash_array_from_seq_struct {
+//	my $seq_struct = $_[0];
+//	my %genome;
+//	warn "make_genome_hash_array_from_seq_struct: filling genome array...\n";
+//	foreach my $id(keys %{$$seq_struct{'seq'}}) {
+//		my $length = $$seq_struct{'seq_length'}{$id};
+//		my @array;
+//		for(my $i=0; $i<=$length; $i++) { $array[$i] = 0; }
+//		push @{$genome{$id}}, @array;
+//	}
+//	return \%genome;
+//}
+
+struct Genome {
+    id:String,
+    desc:String,
+    seq:String,
+}
+
+fn make_crazy_datastructure_for_genome(seq_struct : Vec<Fasta>, logger : &Logger) -> Vec<Genome> {
+    println!("make_crazy_datastructure_for_genome: filling genome array...");
+
+    // perhaps Genome should actually be part of FASTA - given it's got to be made from it?
+    let mut genome: Vec<Genome> = Vec::new();
+
+    return genome;
+}
+
+//sub fill_genome_hash_array_from_vcf {
+//	my ($genome_hash, $vcf, $settings, $exclude, $include, $min_depth) = @_;
+//
+//	# sometimes 2 vcf lines for the same position are given (Pilon). Only consider the first one
+//	my $last_contig_and_position;
+//	my %variants_found;
+//
+//	my ($ref_count, $variant_count, $min_depth_filtered, $other_filtered) = (0, 0, 0, 0);
+//	warn "fill_genome_hash_array_from_vcf: Saving reference positions (1) and variants (2) over genome array from $vcf (setting=$settings, exclude=$exclude, include=$include, min depth=$min_depth)...\n";
+//	open my $fh, '<', $vcf or die "Cannot open $vcf: $!\n";
+//	VCF: while(my $line=<$fh>) {
+//		chomp $line;
+//
+//		my $VCF_line = vcflines::read_VCF_lines($line);
+//		my $supercontig = $$VCF_line{'supercontig'};
+//		my $position = $$VCF_line{'position'};
+//		my $base_type = $$VCF_line{'base_type0'};
+//
+//		# Ignore ambigious, or contigs of uninterest
+//		next VCF if($$VCF_line{'next'} eq 1);
+//		next VCF if(($exclude !~ m/n/i) && ($supercontig eq $exclude));
+//		next VCF if(($include !~ m/n/i) && ($supercontig ne $include));
+//
+//		# Ignore lines given twice
+//		if(!defined $last_contig_and_position) { $last_contig_and_position = "$supercontig\t$position"; }
+//		else {
+//			my $current_contig_and_position = "$supercontig\t$position";
+//			if($current_contig_and_position eq $last_contig_and_position) {
+//				$last_contig_and_position = $current_contig_and_position;
+//				next VCF;
+//			}
+//			$last_contig_and_position = $current_contig_and_position;
+//		}
+//
+//		# Min depth filtering
+//		if((defined $$VCF_line{'DP0'}) && ($$VCF_line{'DP0'} ne '?'))  {
+//			if($$VCF_line{'DP0'} < $min_depth) {
+//				$min_depth_filtered++;
+//				next VCF;
+//			}
+//		}
+//
+//		# heterozygous sites
+//		if(($settings eq 1) && ($base_type eq 'heterozygous')) {
+//			$other_filtered++;
+//			next VCF;
+//		}
+//		# indels (snp_multi = E.g. ref: ACTCGTCCTGACT consensus: AACTCGTACTGAC)
+//		if(($settings =~ m/[12]/) && ($base_type =~ m/insertion|deletion|snp_multi/)) {
+//			$other_filtered++;
+//			next VCF;
+//		}
+//
+//		# Everything i do want to save
+//		if($base_type !~ m/heterozygous|snp|insertion|deletion|reference/) {
+//			$other_filtered++;
+//			next VCF;
+//		}
+//
+//		# save reference bases
+//		if($base_type =~ m/reference/) {
+//			$ref_count++;
+//			$$genome_hash{$supercontig}[$position] = 1;
+//		} else {
+//			$variant_count++;
+//			$variants_found{$base_type}++;
+//			$$genome_hash{$supercontig}[$position] = 2;
+//		}
+//	}
+//
+//	# summary
+//	warn "Reference bases:\t$ref_count\n";
+//	warn "Variant bases:\t$variant_count\n";
+//	foreach my $type(keys %variants_found) {
+//		my $count = $variants_found{$type};
+//		warn "Variant bases (type=$type)\t$count\n";
+//	}
+//	warn "Excluded for < min depth:\t$min_depth_filtered\n";
+//	warn "Excluded for base type:\t$other_filtered\n";
+//	return $genome_hash;
+//}
+
 fn main() {
 
     let args = Args::parse();
@@ -124,6 +234,31 @@ fn main() {
         logger.information(&format!("id and desc: {} {}", entry.id, entry.desc));
         logger.information(&format!("length of seq: {}", entry.seq.len()));
     }
+
+    // In ECA tools, the first step was to do this:
+    //# outfile
+    //if(! -d $opt_o) { `mkdir $opt_o`; }
+    //my($filename, $dirs, $suffix) = fileparse($opt_v);
+    //my $settings = "m-$opt_m-s-$opt_s-e-$opt_e-z-$opt_z";
+    //my $outfile1 = "$opt_o/$filename-$settings-reference-bases.tab";
+    //my $outfile2 = "$opt_o/$filename-$settings-variant-bases.tab";
+
+    //# Save sequences
+    //my $fasta = fastafile::fasta_to_struct($opt_f);
+
+    //# Save genome to array
+    //my $genome_array = genomearray::make_genome_hash_array_from_seq_struct($fasta);
+    
+    //let genome = make_crazy_datastructure_for_genome(fasta, &logger);
+
+    //# Convert ref bases to 1 and variants to 2
+    //$genome_array = genomearray::fill_genome_hash_array_from_vcf($genome_array, $opt_v, $opt_s, $opt_e, $opt_z, $opt_m);
+
+    //# Print tab files for locations of 1s (reference)
+    //genomearray::print_tab_file_from_regions_in_genome_hash($fasta, $genome_array, 1, $outfile1);
+
+    //# Print tab files for locations of 1s (variant)
+    //genomearray::print_tab_file_from_regions_in_genome_hash($fasta, $genome_array, 2, $outfile2);
 
     logger.output("output test");
     logger.warning("output test");
