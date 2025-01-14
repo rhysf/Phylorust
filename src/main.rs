@@ -19,6 +19,26 @@ struct Args {
     /// tab delimited file containing isolate name, type (VCF) and VCF location
     #[arg(short='n', long="name_type_location")]
     name_type_location_filename: String,
+
+    /// Output directory 
+    #[arg(short='o', long="output_dir", default_value="Rustatools_output")]
+    output_dir: String,
+
+    /// Settings 
+    #[arg(short='s', long="settings", default_value_t=1)]
+    settings: u8,
+
+    // Minimum read depth
+    #[arg(short='m', long="min_read_depth", default_value_t=4)]
+    min_read_depth: u8,
+
+    /// Exclude variants on contig 
+    #[arg(short='e', long="exclude_contig", default_value="n")]
+    exclude_contig: String,
+
+    /// Exclude variants not on contig 
+    #[arg(short='z', long="restrict_contig", default_value="n")]
+    restrict_contig: String,
 }
 
 struct Fasta {
@@ -27,12 +47,12 @@ struct Fasta {
     seq:String,
 }
 
-fn read_name_type_location_file(file : String, logger : &Logger) -> HashMap<String, String> {
+fn read_name_type_location_file(file : &str, logger : &Logger) -> HashMap<String, String> {
     logger.information(&format!("Processing file: {}", file));
 
     let mut name_type_location_hash: HashMap<String, String> = HashMap::new();
 
-    let content = fs::read_to_string(&file).unwrap_or_else(|error|{
+    let content = fs::read_to_string(file).unwrap_or_else(|error|{
         logger.error(&format!("Error with file: {} {}", file, error));
         process::exit(1);
     });
@@ -220,7 +240,7 @@ fn main() {
     let logger = Logger;
 
     // Read Name Type Location file
-    let name_type_location_hash = read_name_type_location_file(args.name_type_location_filename, &logger);
+    let name_type_location_hash = read_name_type_location_file(&args.name_type_location_filename, &logger);
 
     // Info about VCF's
     let number_of_vcfs = name_type_location_hash.len();
@@ -235,16 +255,35 @@ fn main() {
         logger.information(&format!("length of seq: {}", entry.seq.len()));
     }
 
-    // In ECA tools, the first step was to do this:
-    //# outfile
-    //if(! -d $opt_o) { `mkdir $opt_o`; }
-    //my($filename, $dirs, $suffix) = fileparse($opt_v);
-    //my $settings = "m-$opt_m-s-$opt_s-e-$opt_e-z-$opt_z";
-    //my $outfile1 = "$opt_o/$filename-$settings-reference-bases.tab";
-    //my $outfile2 = "$opt_o/$filename-$settings-variant-bases.tab";
+    // Make output folder
+    fs::create_dir_all(&args.output_dir).unwrap_or_else(|error|{
+        logger.error(&format!("Error with output directory: {}", error));
+        process::exit(1);
+    });
 
-    //# Save sequences
-    //my $fasta = fastafile::fasta_to_struct($opt_f);
+    // Output files
+    let name_type_location_filename_path = Path::new(&args.name_type_location_filename);
+    let name_type_location_filename_wo_dir = name_type_location_filename_path.file_name().unwrap().to_str();
+    logger.output(name_type_location_filename_wo_dir.unwrap());
+
+    let rustatools_settings = &format!("m-{}-s-{}-e-{}-z-{}", 
+        args.min_read_depth, 
+        args.settings, 
+        args.exclude_contig, 
+        args.restrict_contig);
+    
+    let outfile_reference_bases = &format!("{}/{}-{}-reference-bases.tab", 
+        args.output_dir,
+        name_type_location_filename_wo_dir.unwrap(),
+        rustatools_settings);
+
+    let outfile_variant_bases = &format!("{}/{}-{}-variant-bases.tab", 
+        args.output_dir,
+        name_type_location_filename_wo_dir.unwrap(),
+        rustatools_settings);
+
+    logger.output(&format!("Outfile reference bases = {}", outfile_reference_bases));
+    logger.output(&format!("Outfile variant bases = {}", outfile_variant_bases));
 
     //# Save genome to array
     //my $genome_array = genomearray::make_genome_hash_array_from_seq_struct($fasta);
