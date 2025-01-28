@@ -47,10 +47,16 @@ struct Fasta {
     seq:String,
 }
 
-fn read_name_type_location_file(file : &str, logger : &Logger) -> HashMap<String, String> {
+struct NameTypeLocation {
+    name:String,
+    filetype:String,
+    location:String,
+}
+
+fn read_name_type_location_file(file : &str, logger : &Logger) -> Vec<NameTypeLocation> {
     logger.information(&format!("Processing file: {}", file));
 
-    let mut name_type_location_hash: HashMap<String, String> = HashMap::new();
+    let mut name_type_locations = Vec::new();
 
     let content = fs::read_to_string(file).unwrap_or_else(|error|{
         logger.error(&format!("Error with file: {} {}", file, error));
@@ -73,10 +79,16 @@ fn read_name_type_location_file(file : &str, logger : &Logger) -> HashMap<String
             process::exit(1);
         }
 
+        // check that 2nd column says vcf in lc or uc
+
         // save into hash map
-        name_type_location_hash.insert(line_parts[0].to_string(), line_parts[2].to_string());
+        name_type_locations.push(NameTypeLocation{
+            name:line_parts[0].to_string(),
+            filetype:line_parts[1].to_string(),
+            location:line_parts[2].to_string(),
+        });
     }
-    return name_type_location_hash;
+    return name_type_locations;
 }
 
 fn read_fasta(file : String, logger : &Logger) -> Vec<Fasta> {
@@ -124,30 +136,16 @@ fn read_fasta(file : String, logger : &Logger) -> Vec<Fasta> {
     return fasta;
 }
 
-//sub make_genome_hash_array_from_seq_struct {
-//	my $seq_struct = $_[0];
-//	my %genome;
-//	warn "make_genome_hash_array_from_seq_struct: filling genome array...\n";
-//	foreach my $id(keys %{$$seq_struct{'seq'}}) {
-//		my $length = $$seq_struct{'seq_length'}{$id};
-//		my @array;
-//		for(my $i=0; $i<=$length; $i++) { $array[$i] = 0; }
-//		push @{$genome{$id}}, @array;
-//	}
-//	return \%genome;
-//}
+fn make_hashmap_of_arrays_for_genome(fasta : &Vec<Fasta>, logger : &Logger) -> HashMap<String, Vec<i32>> {
+    logger.information("make_hashmap_of_arrays_for_genome: filling genome array...");
 
-struct Genome {
-    id:String,
-    desc:String,
-    seq:String,
-}
+    let mut genome = HashMap::new();
 
-fn make_crazy_datastructure_for_genome(seq_struct : Vec<Fasta>, logger : &Logger) -> Vec<Genome> {
-    println!("make_crazy_datastructure_for_genome: filling genome array...");
-
-    // perhaps Genome should actually be part of FASTA - given it's got to be made from it?
-    let mut genome: Vec<Genome> = Vec::new();
+    // go through fasta and make contig array of all zeros
+    for entry in fasta {
+        let contig_array = vec![0;entry.seq.len()];
+        genome.insert(entry.id.to_string(), contig_array);
+    }
 
     return genome;
 }
@@ -234,23 +232,59 @@ fn make_crazy_datastructure_for_genome(seq_struct : Vec<Fasta>, logger : &Logger
 //	return $genome_hash;
 //}
 
+fn read_VCF(name_type_location : &NameTypeLocation, logger : &Logger) {
+    logger.information(&format!("read VCF: {}", name_type_location.location));
+
+    // read file
+    let vcf_file = fs::read_to_string(&name_type_location.location).unwrap_or_else(|error|{
+        logger.error(&format!("Error with file: {} {}", name_type_location.location, error));
+        process::exit(1);
+    });
+
+    // go through each line
+    for line in vcf_file.lines() {
+
+        // Header
+        if line.starts_with("#") { continue; }
+
+        // Entries
+        let line_parts : Vec<&str> = line.split('\t').collect();
+
+        // Initial quality check
+        if line_parts.len() < 9 {
+            logger.error(&format!("Error with vcf line: {}", line));
+            process::exit(1);
+        }
+
+        let contig = line_parts[0];
+        let position = line_parts[1];
+        let id = line_parts[2];
+        let ref_base = line_parts[3];
+        let alt_base = line_parts[4];
+        let cons_qual = line_parts[5];
+        let filter = line_parts[6];
+        let info = line_parts[7];
+        let format = line_parts[8];
+    }
+}
+
 fn main() {
 
     let args = Args::parse();
     let logger = Logger;
 
     // Read Name Type Location file
-    let name_type_location_hash = read_name_type_location_file(&args.name_type_location_filename, &logger);
+    let name_type_locations = read_name_type_location_file(&args.name_type_location_filename, &logger);
 
     // Info about VCF's
-    let number_of_vcfs = name_type_location_hash.len();
+    let number_of_vcfs = name_type_locations.len();
     println!("{} VCF files specified", number_of_vcfs);
 
     // Read FASTA file to memory
     let fasta = read_fasta(args.fasta_filename, &logger);
 
     // go through entries
-    for entry in fasta {
+    for entry in &fasta {
         logger.information(&format!("id and desc: {} {}", entry.id, entry.desc));
         logger.information(&format!("length of seq: {}", entry.seq.len()));
     }
@@ -285,12 +319,16 @@ fn main() {
     logger.output(&format!("Outfile reference bases = {}", outfile_reference_bases));
     logger.output(&format!("Outfile variant bases = {}", outfile_variant_bases));
 
-    //# Save genome to array
-    //my $genome_array = genomearray::make_genome_hash_array_from_seq_struct($fasta);
-    
-    //let genome = make_crazy_datastructure_for_genome(fasta, &logger);
+    // Save genome to hashmap of arrays
+    let mut genome = make_hashmap_of_arrays_for_genome(&fasta, &logger);
+
+    // go through each VCF
+    for name_type_location in &name_type_locations {
+        read_VCF(name_type_location, &logger);
+    }
 
     //# Convert ref bases to 1 and variants to 2
+    // Start by doing this for a single VCF, and then put in a loop to do it for every VCF
     //$genome_array = genomearray::fill_genome_hash_array_from_vcf($genome_array, $opt_v, $opt_s, $opt_e, $opt_z, $opt_m);
 
     //# Print tab files for locations of 1s (reference)
