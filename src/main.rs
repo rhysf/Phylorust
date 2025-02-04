@@ -1,5 +1,7 @@
 use clap::Parser;
+use std::collections::HashSet;
 use std::fs;
+use std::ops::Index;
 use std::process;
 use std::path::Path;
 use std::collections::HashMap;
@@ -232,6 +234,57 @@ fn make_hashmap_of_arrays_for_genome(fasta : &Vec<Fasta>, logger : &Logger) -> H
 //	return $genome_hash;
 //}
 
+struct VCFsamples {
+    header:String,
+    samples:HashMap<usize, String>,
+}
+
+struct VCFEntry {
+    contig:String,
+    position:String,
+    id:String,
+    ref_base:String,
+    alt_base:String,
+    cons_qual:String,
+    filter:String,
+    info:String,
+    format:String,
+    samples:HashMap<usize, String>,
+}
+
+fn read_vcf_line(line : &str, logger : &Logger) -> VCFEntry {
+
+    let line_parts : Vec<&str> = line.split('\t').collect();
+
+    // Initial quality check
+    if line_parts.len() < 9 {
+        logger.error(&format!("Error with vcf line: {}", line));
+        process::exit(1);
+    }
+
+    // get sample info
+    let mut sample_names = HashMap::new();
+    for(index, sample_name) in line_parts[9..].iter().enumerate() {
+        sample_names.insert(index - 9, sample_name.to_string());
+    }
+
+    // save various info for vcf entry
+    let vcfentry = VCFEntry{
+        contig:line_parts[0].to_string(),
+        position:line_parts[1].to_string(),
+        id:line_parts[2].to_string(),
+        ref_base:line_parts[3].to_string(),
+        alt_base:line_parts[4].to_string(),
+        cons_qual:line_parts[5].to_string(),
+        filter:line_parts[6].to_string(),
+        info:line_parts[7].to_string(),
+        format:line_parts[8].to_string(),
+        samples:sample_names,
+    };
+
+    vcfentry
+}
+
 fn read_VCF(name_type_location : &NameTypeLocation, logger : &Logger) {
     logger.information(&format!("read VCF: {}", name_type_location.location));
 
@@ -241,30 +294,35 @@ fn read_VCF(name_type_location : &NameTypeLocation, logger : &Logger) {
         process::exit(1);
     });
 
-    // go through each line
+    let mut vcf_samples:Option<VCFsamples> = None;
+
+    // go through each line of the VCF
     for line in vcf_file.lines() {
 
+        // Metadata
+        if line.starts_with("##") { 
+            continue; 
+        }
         // Header
-        if line.starts_with("#") { continue; }
+        if line.starts_with("#CHROM\tPOS\tID\tREF") { 
 
-        // Entries
-        let line_parts : Vec<&str> = line.split('\t').collect();
+            let line_parts : Vec<&str> = line.split('\t').collect();
+            let mut sample_names = HashMap::new();
+            for(index, sample_name) in line_parts[9..].iter().enumerate() {
+                sample_names.insert(index - 9, sample_name.to_string());
+            }
 
-        // Initial quality check
-        if line_parts.len() < 9 {
-            logger.error(&format!("Error with vcf line: {}", line));
-            process::exit(1);
+            vcf_samples = Some(VCFsamples{
+                header:line.to_string(),
+                samples:sample_names,
+            });
+
+            continue; 
         }
 
-        let contig = line_parts[0];
-        let position = line_parts[1];
-        let id = line_parts[2];
-        let ref_base = line_parts[3];
-        let alt_base = line_parts[4];
-        let cons_qual = line_parts[5];
-        let filter = line_parts[6];
-        let info = line_parts[7];
-        let format = line_parts[8];
+        // Entries
+        let vcfentry = read_vcf_line(line, logger);
+
     }
 }
 
