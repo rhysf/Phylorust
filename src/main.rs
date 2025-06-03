@@ -250,6 +250,46 @@ struct VCFEntry {
     info:String,
     format:String,
     samples:HashMap<usize, String>,
+    samples_to_genotype:HashMap<String, String>,
+}
+
+fn read_genotype_position(format : &str, logger : &Logger) -> usize {
+    if format.starts_with("GT") {
+        return 0;
+    }
+    
+    let format_string = format.to_string();
+    let format_parts : Vec<&str> = format_string.split(':').collect();
+
+    for(index, format_part) in format_parts.iter().enumerate() {
+        if format_part.to_string().to_uppercase() == "GT" {
+            return index;
+        }
+    }
+
+    logger.error(&format!("Error with vcf line (no genotype found): {}", format));
+    process::exit(1);
+}
+
+fn read_genotype(samples : &[&str], gt_pos : usize, sample_names : &HashMap<usize, String>) -> HashMap<String, String> {
+
+    let mut genotype_to_sample = HashMap::new();
+
+    for(index, sample) in samples.iter().enumerate() {
+        let sample_parts : Vec<&str> = sample.split(':').collect();
+        let sample_name = &sample_names[&index];
+        let genotype = match sample_parts[gt_pos] {
+            "0/0" => "0",
+            "1/1" => "1",
+            "0|0" => "0",
+            "1|1" => "1",
+            _ => sample_parts[gt_pos]
+        };
+
+        genotype_to_sample.insert(sample_name.to_string(), genotype.to_string());
+    }
+
+    genotype_to_sample
 }
 
 fn read_vcf_line(line : &str, logger : &Logger) -> VCFEntry {
@@ -265,8 +305,17 @@ fn read_vcf_line(line : &str, logger : &Logger) -> VCFEntry {
     // get sample info
     let mut sample_names = HashMap::new();
     for(index, sample_name) in line_parts[9..].iter().enumerate() {
-        sample_names.insert(index - 9, sample_name.to_string());
+        sample_names.insert(index, sample_name.to_string());
     }
+
+    // get genotype
+    let gt_position = read_genotype_position(line_parts[8], logger);
+    let samples_to_genotype = read_genotype(&line_parts[9..], gt_position, &sample_names);
+
+    // Determine what base it is
+    // let base1, base2, base_type) = samples_to_genotype, line_parts[3].to_string(), line_parts[4].to_string(),
+
+
 
     // save various info for vcf entry
     let vcfentry = VCFEntry{
@@ -280,12 +329,13 @@ fn read_vcf_line(line : &str, logger : &Logger) -> VCFEntry {
         info:line_parts[7].to_string(),
         format:line_parts[8].to_string(),
         samples:sample_names,
+        samples_to_genotype,
     };
 
     vcfentry
 }
 
-fn read_VCF(name_type_location : &NameTypeLocation, logger : &Logger) {
+fn read_vcf(name_type_location : &NameTypeLocation, logger : &Logger) {
     logger.information(&format!("read VCF: {}", name_type_location.location));
 
     // read file
@@ -309,13 +359,16 @@ fn read_VCF(name_type_location : &NameTypeLocation, logger : &Logger) {
             let line_parts : Vec<&str> = line.split('\t').collect();
             let mut sample_names = HashMap::new();
             for(index, sample_name) in line_parts[9..].iter().enumerate() {
-                sample_names.insert(index - 9, sample_name.to_string());
+                logger.warning(&format!("index = {}", index));
+                sample_names.insert(index, sample_name.to_string());
             }
 
             vcf_samples = Some(VCFsamples{
                 header:line.to_string(),
                 samples:sample_names,
             });
+
+            logger.warning(line);
 
             continue; 
         }
@@ -382,7 +435,7 @@ fn main() {
 
     // go through each VCF
     for name_type_location in &name_type_locations {
-        read_VCF(name_type_location, &logger);
+        read_vcf(name_type_location, &logger);
     }
 
     //# Convert ref bases to 1 and variants to 2
