@@ -479,6 +479,10 @@ fn read_vcf_line(line : &str, logger : &Logger) -> VCFEntry {
     let id = line_parts[2].to_string();
     let ref_base = line_parts[3].to_string();
     let alt_base = line_parts[4].to_string();
+    let cons_qual = line_parts[5].to_string();
+    let filter = line_parts[6].to_string();
+    let info = line_parts[7].to_string();
+    let format = line_parts[8].to_string();
 
     // Initial quality check
     if line_parts.len() < 9 {
@@ -506,10 +510,10 @@ fn read_vcf_line(line : &str, logger : &Logger) -> VCFEntry {
         id,
         ref_base,
         alt_base,
-        cons_qual:line_parts[5].to_string(),
-        filter:line_parts[6].to_string(),
-        info:line_parts[7].to_string(),
-        format:line_parts[8].to_string(),
+        cons_qual,
+        filter,
+        info,
+        format,
         samples:sample_names,
         samples_to_genotype,
         samples_to_base1,
