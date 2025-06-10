@@ -1,6 +1,6 @@
 use clap::Parser;
 use std::collections::HashSet;
-use std::fs;
+use std::fs::{self, exists};
 use std::ops::Index;
 use std::process;
 use std::path::Path;
@@ -251,6 +251,9 @@ struct VCFEntry {
     format:String,
     samples:HashMap<usize, String>,
     samples_to_genotype:HashMap<String, String>,
+    samples_to_base1:HashMap<String, String>,
+    samples_to_base2:HashMap<String, String>,
+    samples_to_base_type:HashMap<String, String>,
 }
 
 fn read_genotype_position(format : &str, logger : &Logger) -> usize {
@@ -271,9 +274,9 @@ fn read_genotype_position(format : &str, logger : &Logger) -> usize {
     process::exit(1);
 }
 
-fn read_genotype(samples : &[&str], gt_pos : usize, sample_names : &HashMap<usize, String>) -> HashMap<String, String> {
+fn create_sample_to_genotype(samples : &[&str], gt_pos : usize, sample_names : &HashMap<usize, String>) -> HashMap<String, String> {
 
-    let mut genotype_to_sample = HashMap::new();
+    let mut sample_to_genotype = HashMap::new();
 
     for(index, sample) in samples.iter().enumerate() {
         let sample_parts : Vec<&str> = sample.split(':').collect();
@@ -286,15 +289,196 @@ fn read_genotype(samples : &[&str], gt_pos : usize, sample_names : &HashMap<usiz
             _ => sample_parts[gt_pos]
         };
 
-        genotype_to_sample.insert(sample_name.to_string(), genotype.to_string());
+        sample_to_genotype.insert(sample_name.to_string(), genotype.to_string());
     }
 
-    genotype_to_sample
+    sample_to_genotype
 }
+
+fn determine_bases_and_base_type(samples_to_genotype: &HashMap<String, String>, ref_base : &String, alt_base : &String, logger : &Logger) -> (HashMap<String, String>, HashMap<String, String>, HashMap<String, String>) {
+    let mut sample_to_base1 = HashMap::new();
+    let mut sample_to_base2 = HashMap::new();
+    let mut sample_to_base_type = HashMap::new();
+
+    // loop over each sample and fill hash maps
+    for (sample, genotype) in samples_to_genotype.iter() {
+        let (base1, base2, base_type) = determine_bases_and_base_type_single_sample(&genotype, &ref_base, &alt_base, &logger);
+        sample_to_base1.insert(sample.to_string(), base1);
+        sample_to_base2.insert(sample.to_string(), base2);
+        sample_to_base_type.insert(sample.to_string(), base_type);
+    }
+
+    (sample_to_base1, sample_to_base2, sample_to_base_type)
+}
+
+fn determine_bases_and_base_type_single_sample(genotype: &String, ref_base : &String, alt_base : &String, logger : &Logger) -> (String, String, String) {
+
+    let mut base1 = "N".to_string();
+    let mut base2 = "None".to_string();
+    let mut base_type = "ambiguous".to_string();
+
+    // Save bases and GT parts
+    let consensus_bases : Vec<&str> = alt_base.split(',').collect();
+    let mut all_bases = vec![ref_base.as_str()];
+    all_bases.extend(consensus_bases.iter().cloned());
+
+    //logger.warning("determine_bases_and_base_type_single_sample");
+
+    let gt_parts : Vec<&str> = genotype.split(|c| c == '/' || c == '|').collect();
+    let mut gt_bases : Vec<&str> = Vec::new();
+    for gt_part in gt_parts.iter() {
+        let mut index = 0;
+
+        // Ambiguous GT (all things non numerical such as . or *)
+        match gt_part.parse::<usize>() {
+            Ok(n) => {
+                index = n;
+            },
+            Err(e) => {
+                base1 = "N".to_string();
+                base_type = "ambiguous".to_string();
+                return (base1, base2, base_type);
+            }
+        }
+
+        // No base defined
+        if((all_bases.len()-1) < index) {
+            logger.error(&format!("vcf parsing genotype error: No {} defined from ref {} and cons {}", index, ref_base, alt_base));
+            process::exit(1);
+        }
+
+        let gt_base = all_bases[index];
+
+        // Ambiguous bases
+        if(gt_base == "N") || (gt_base == ".") || (gt_base == "*") {
+            base1 = "N".to_string();
+            base_type = "ambiguous".to_string();
+            return (base1, base2, base_type);
+        }
+
+        // save the bases
+        gt_bases.push(gt_base);
+    }
+
+	// // polyploid?
+	// die "VCF_struct_determine_bases_and_base_type: polyploid not implemented yet: $GT\n" if(scalar(@GT_parts) > 2);
+
+	// // Homozygous ref-calls
+	// if($GT eq 0) {
+	// 	$base1 = $ref_base;
+	// 	$base_type = 'reference';
+	// 	return ($base1, $base2, $base_type);
+	// }
+
+	// # Homozygous non-reference
+	// elsif(($GT ne 0) && (scalar(@GT_bases) eq 1)) {
+	// 	my $consensus = $GT_bases[0];
+
+	// 	# Homozygous SNP
+	// 	if(length($ref_base) eq length($consensus)) { 
+
+	// 		# SNP
+	// 		if((length($ref_base) eq 1) && (length($consensus) eq 1)) { 
+	// 			$base1 = $consensus;
+	// 			$base_type = 'snp';
+	// 			return ($base1, $base2, $base_type);
+	// 		}
+
+	// 		// SNP(s) disguised as an indel
+	// 		if(length($ref_base) eq length($consensus)) {
+	// 			my @bases_reference = split //, $ref_base;
+	// 			my @bases_consensus = split //, $consensus;
+	// 			my $snp_count = 0;
+	// 			my ($ref_base_saved, $cons_base_saved);
+	// 			for(my $i=0; $i<scalar(@bases_reference); $i++) {
+	// 				my $ref_base = $bases_reference[$i];
+	// 				my $cons_base = $bases_consensus[$i];
+	// 				if($ref_base ne $cons_base) { 
+	// 					$ref_base_saved = $ref_base;
+	// 					$cons_base_saved = $cons_base;
+	// 					$snp_count++; 
+	// 				}
+	// 			}
+	// 			if($snp_count eq 0) {
+	// 				$base1 = $ref_base;
+	// 				$base_type = 'reference';
+	// 				return ($base1, $base2, $base_type);
+	// 			}
+	// 			elsif($snp_count eq 1) {
+	// 				$base1 = $ref_base_saved;
+	// 				$base2 = $cons_base_saved;
+	// 				$base_type = 'snp';
+	// 				return ($base1, $base2, $base_type);
+	// 			}
+	// 			if($snp_count > 1) {
+	// 				$base1 = $consensus;
+	// 				$base_type = ('snp_multi' . $snp_count);
+	// 				return ($base1, $base2, $base_type);
+	// 			}
+	// 		}
+	
+	// 		# Ambiguous?
+	// 		warn "Nothing found for this apparant homozygous snp:\n";
+	// 		warn Dumper($VCF_struct);
+	// 		$base1 = 'N';
+	// 		$base_type = 'ambiguous';
+	// 		return ($base1, $base2, $base_type);
+	// 	}
+
+	// 	# Homozygous indel
+	// 	if(length($ref_base) ne length($consensus)) {
+
+	// 		# Deletion (maybe with snps in there too!)
+	// 		if(length($ref_base) > length($consensus)) { 
+	// 			$base1 = $consensus;
+	// 			$base_type = 'deletion';
+	// 			return ($base1, $base2, $base_type);
+	// 		}
+
+	// 		# Insertion (maybe with snps in there too!)
+	// 		if(length($ref_base) < length($consensus)) { 
+	// 			$base1 = $consensus;
+	// 			$base_type = 'insertion';
+	// 			return ($base1, $base2, $base_type);
+	// 		}
+
+	// 		# Ambiguous?
+	// 		warn "Nothing found for this apparent homozygous indel:\n";
+	// 		warn Dumper($VCF_struct);
+	// 		$base1 = 'N';
+	// 		$base_type = 'ambiguous';
+	// 		return ($base1, $base2, $base_type);
+	// 	}
+	// }
+
+	// # Bi-allelic heterozygous positions & indels
+	// elsif(scalar(@GT_bases) eq 2) {
+	// 	$base1 = $GT_bases[0];
+	// 	$base2 = $GT_bases[1];
+	// 	$base_type = 'heterozygous';
+	// 	if(length($base1) < length($base2)) { $base_type = 'het_insertion'; }
+	// 	if(length($base1) > length($base2)) { $base_type = 'het_deletion'; }
+	// 	return ($base1, $base2, $base_type);
+	// }
+
+	// # Ambiguous?
+	// else {
+	// 	die "VCF_struct_determine_bases_and_base_type: Error. Undefined variant: ref $ref_base and cons $cons_base and GT ($GT) = @GT_bases\n";
+	// }
+
+    (base1, base2, base_type)
+}
+
+
 
 fn read_vcf_line(line : &str, logger : &Logger) -> VCFEntry {
 
     let line_parts : Vec<&str> = line.split('\t').collect();
+    let contig = line_parts[0].to_string();
+    let position = line_parts[1].to_string();
+    let id = line_parts[2].to_string();
+    let ref_base = line_parts[3].to_string();
+    let alt_base = line_parts[4].to_string();
 
     // Initial quality check
     if line_parts.len() < 9 {
@@ -310,29 +494,28 @@ fn read_vcf_line(line : &str, logger : &Logger) -> VCFEntry {
 
     // get genotype
     let gt_position = read_genotype_position(line_parts[8], logger);
-    let samples_to_genotype = read_genotype(&line_parts[9..], gt_position, &sample_names);
+    let samples_to_genotype = create_sample_to_genotype(&line_parts[9..], gt_position, &sample_names);
 
     // Determine what base it is
-    // let base1, base2, base_type) = samples_to_genotype, line_parts[3].to_string(), line_parts[4].to_string(),
+    let (samples_to_base1, samples_to_base2, samples_to_base_type) = determine_bases_and_base_type(&samples_to_genotype, &ref_base, &alt_base, &logger);
 
-
-
-    // save various info for vcf entry
-    let vcfentry = VCFEntry{
-        contig:line_parts[0].to_string(),
-        position:line_parts[1].to_string(),
-        id:line_parts[2].to_string(),
-        ref_base:line_parts[3].to_string(),
-        alt_base:line_parts[4].to_string(),
+    // return various info for vcf entry
+    VCFEntry{
+        contig,
+        position,
+        id,
+        ref_base,
+        alt_base,
         cons_qual:line_parts[5].to_string(),
         filter:line_parts[6].to_string(),
         info:line_parts[7].to_string(),
         format:line_parts[8].to_string(),
         samples:sample_names,
         samples_to_genotype,
-    };
-
-    vcfentry
+        samples_to_base1,
+        samples_to_base2,
+        samples_to_base_type,
+    }
 }
 
 fn read_vcf(name_type_location : &NameTypeLocation, logger : &Logger) {
