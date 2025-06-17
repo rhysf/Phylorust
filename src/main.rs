@@ -360,113 +360,90 @@ fn determine_bases_and_base_type_single_sample(genotype: &String, ref_base : &St
         gt_bases.push(gt_base);
     }
 
-	// // polyploid?
-	// die "VCF_struct_determine_bases_and_base_type: polyploid not implemented yet: $GT\n" if(scalar(@GT_parts) > 2);
+	// Homozygous ref-calls
+    if genotype == "0" {
+        base1 = ref_base.to_string();
+	    base_type = "reference".to_string();
+	 	return (base1, base2, base_type);
+    }
 
-	// // Homozygous ref-calls
-	// if($GT eq 0) {
-	// 	$base1 = $ref_base;
-	// 	$base_type = 'reference';
-	// 	return ($base1, $base2, $base_type);
-	// }
+	// Homozygous non-reference
+    if genotype != "0" && gt_bases.len() == 1 {
+        let get_base = gt_bases[0];
 
-	// # Homozygous non-reference
-	// elsif(($GT ne 0) && (scalar(@GT_bases) eq 1)) {
-	// 	my $consensus = $GT_bases[0];
+        // Homozygous SNP
+        if ref_base.len() == get_base.len() {
 
-	// 	# Homozygous SNP
-	// 	if(length($ref_base) eq length($consensus)) { 
+            // Simple Homozygous SNP
+            if get_base.len() == 1 {
+                base1 = get_base.to_string();
+	 			base_type = "snp".to_string();
+	 			return (base1, base2, base_type);
+            }
 
-	// 		# SNP
-	// 		if((length($ref_base) eq 1) && (length($consensus) eq 1)) { 
-	// 			$base1 = $consensus;
-	// 			$base_type = 'snp';
-	// 			return ($base1, $base2, $base_type);
-	// 		}
+            // SNP(s) disguised as an indel
+            let mut snp_count = 0;
+            let mut ref_base_saved = "".to_string();
+            let mut cons_base_saved = "".to_string();
+            for(index, consensus_base_char) in get_base.chars().enumerate() {
+                let ref_base_char = ref_base.chars().nth(index).unwrap();
+                if ref_base_char != consensus_base_char {
+                    ref_base_saved = ref_base_char.to_string();
+					cons_base_saved = consensus_base_char.to_string();
+					snp_count+=1;
+                }
+            }
 
-	// 		// SNP(s) disguised as an indel
-	// 		if(length($ref_base) eq length($consensus)) {
-	// 			my @bases_reference = split //, $ref_base;
-	// 			my @bases_consensus = split //, $consensus;
-	// 			my $snp_count = 0;
-	// 			my ($ref_base_saved, $cons_base_saved);
-	// 			for(my $i=0; $i<scalar(@bases_reference); $i++) {
-	// 				my $ref_base = $bases_reference[$i];
-	// 				my $cons_base = $bases_consensus[$i];
-	// 				if($ref_base ne $cons_base) { 
-	// 					$ref_base_saved = $ref_base;
-	// 					$cons_base_saved = $cons_base;
-	// 					$snp_count++; 
-	// 				}
-	// 			}
-	// 			if($snp_count eq 0) {
-	// 				$base1 = $ref_base;
-	// 				$base_type = 'reference';
-	// 				return ($base1, $base2, $base_type);
-	// 			}
-	// 			elsif($snp_count eq 1) {
-	// 				$base1 = $ref_base_saved;
-	// 				$base2 = $cons_base_saved;
-	// 				$base_type = 'snp';
-	// 				return ($base1, $base2, $base_type);
-	// 			}
-	// 			if($snp_count > 1) {
-	// 				$base1 = $consensus;
-	// 				$base_type = ('snp_multi' . $snp_count);
-	// 				return ($base1, $base2, $base_type);
-	// 			}
-	// 		}
-	
-	// 		# Ambiguous?
-	// 		warn "Nothing found for this apparant homozygous snp:\n";
-	// 		warn Dumper($VCF_struct);
-	// 		$base1 = 'N';
-	// 		$base_type = 'ambiguous';
-	// 		return ($base1, $base2, $base_type);
-	// 	}
+            return match snp_count{
+                0 => {
+                    base1 = ref_base.to_string();
+	 			    base_type = "reference".to_string();
+	 			    (base1, base2, base_type)
+                }
+                1 => {
+                    base1 = ref_base_saved;
+				    base2 = cons_base_saved;
+				    base_type = "snp".to_string();
+				    (base1, base2, base_type)
+                }
+                _ => {
+                    base1 = get_base.to_string();
+	 			    base_type = format!("snp_multi_{}", snp_count);
+	 			    (base1, base2, base_type)
+                }
+            };
+        }
 
-	// 	# Homozygous indel
-	// 	if(length($ref_base) ne length($consensus)) {
+        // Homozygous indel
+        base1 = get_base.to_string();
+        // Deletion
+        if ref_base.len() > get_base.len() {
+	 		base_type = "deletion".to_string();
+	 		return (base1, base2, base_type);
+        }
+        // Insertion
+	 	base_type = "insertion".to_string();
+	 	return (base1, base2, base_type);
+    }
 
-	// 		# Deletion (maybe with snps in there too!)
-	// 		if(length($ref_base) > length($consensus)) { 
-	// 			$base1 = $consensus;
-	// 			$base_type = 'deletion';
-	// 			return ($base1, $base2, $base_type);
-	// 		}
+	// Bi-allelic heterozygous positions & indels
+    if gt_bases.len() == 2 {
+        let base1 = gt_bases[0].to_string();
+        let base2 = gt_bases[1].to_string();
+        base_type = "heterozygous".to_string();
+        if base1.len() < base2.len() { base_type = "het_insertion".to_string(); }
+        if base1.len() > base2.len() { base_type = "het_deletion".to_string(); }
+        return (base1, base2, base_type);
+    }
 
-	// 		# Insertion (maybe with snps in there too!)
-	// 		if(length($ref_base) < length($consensus)) { 
-	// 			$base1 = $consensus;
-	// 			$base_type = 'insertion';
-	// 			return ($base1, $base2, $base_type);
-	// 		}
+    // polyploid?
+    if gt_bases.len() > 2 {
+        logger.error(&format!("polyploid not implemented currently: {}", genotype));
+        process::exit(1);
+    }
 
-	// 		# Ambiguous?
-	// 		warn "Nothing found for this apparent homozygous indel:\n";
-	// 		warn Dumper($VCF_struct);
-	// 		$base1 = 'N';
-	// 		$base_type = 'ambiguous';
-	// 		return ($base1, $base2, $base_type);
-	// 	}
-	// }
-
-	// # Bi-allelic heterozygous positions & indels
-	// elsif(scalar(@GT_bases) eq 2) {
-	// 	$base1 = $GT_bases[0];
-	// 	$base2 = $GT_bases[1];
-	// 	$base_type = 'heterozygous';
-	// 	if(length($base1) < length($base2)) { $base_type = 'het_insertion'; }
-	// 	if(length($base1) > length($base2)) { $base_type = 'het_deletion'; }
-	// 	return ($base1, $base2, $base_type);
-	// }
-
-	// # Ambiguous?
-	// else {
-	// 	die "VCF_struct_determine_bases_and_base_type: Error. Undefined variant: ref $ref_base and cons $cons_base and GT ($GT) = @GT_bases\n";
-	// }
-
-    (base1, base2, base_type)
+    logger.error(&format!("Unexpected genotype: {}", genotype));
+    process::exit(1);
 }
 
 
@@ -562,6 +539,8 @@ fn read_vcf(name_type_location : &NameTypeLocation, logger : &Logger) {
 
         // Entries
         let vcfentry = read_vcf_line(line, logger);
+
+        
 
     }
 }
