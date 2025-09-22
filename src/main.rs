@@ -1,12 +1,23 @@
 use clap::Parser;
-use std::collections::HashSet;
-use std::fs::{self, exists};
-use std::ops::Index;
+use std::fs::{self};
 use std::process;
 use std::path::Path;
-use std::collections::HashMap;
 mod logger;
 use logger::Logger;
+
+// use std::collections::HashSet;
+// use std::ops::Index;
+// use std::collections::HashMap;
+
+mod read_vcf;
+mod read_fasta;
+mod read_tab;
+mod genome_array;
+
+// use read_fasta::Fasta;
+// use read_vcf::VCFsamples;
+// use read_vcf::VCFEntry;
+// use read_tab::NameTypeLocation;
 
 // setting up the command line parameters
 #[derive(Parser)]
@@ -43,522 +54,20 @@ struct Args {
     restrict_contig: String,
 }
 
-struct Fasta {
-    id:String,
-    desc:String,
-    seq:String,
-}
-
-struct NameTypeLocation {
-    name:String,
-    filetype:String,
-    location:String,
-}
-
-fn read_name_type_location_file(file : &str, logger : &Logger) -> Vec<NameTypeLocation> {
-    logger.information(&format!("Processing file: {}", file));
-
-    let mut name_type_locations = Vec::new();
-
-    let content = fs::read_to_string(file).unwrap_or_else(|error|{
-        logger.error(&format!("Error with file: {} {}", file, error));
-        process::exit(1);
-    });
-
-    // separate out the columns
-    for(index, line) in content.lines().enumerate() {
-        let line_parts:Vec<&str> = line.split('\t').collect();
-
-        // check there are 3 columns
-        if line_parts.len() != 3 {
-            logger.error(&format!("Error with format of file: {} on line number {} = {}", file, index, line));
-            process::exit(1);
-        }
-
-        // check files exist
-        if !Path::new(line_parts[2]).exists() {
-            logger.error(&format!("Error: File {} does not exist", line_parts[2]));
-            process::exit(1);
-        }
-
-        // check that 2nd column says vcf in lc or uc
-
-        // save into hash map
-        name_type_locations.push(NameTypeLocation{
-            name:line_parts[0].to_string(),
-            filetype:line_parts[1].to_string(),
-            location:line_parts[2].to_string(),
-        });
-    }
-    return name_type_locations;
-}
-
-fn read_fasta(file : String, logger : &Logger) -> Vec<Fasta> {
-    println!("Processing file: {}", file);
-
-    // read file
-    let fasta_file = fs::read_to_string(&file).unwrap_or_else(|error|{
-        logger.error(&format!("Error with file: {} {}", file, error));
-        process::exit(1);
-    });
-
-    // separate out the columns
-    let mut last_id = "";
-    let mut last_desc = "";
-    let mut last_sequence = String::from("");
-    let mut fasta: Vec<Fasta> = Vec::new();
-    for line in fasta_file.lines() {
-
-        // ID and Description
-        if line.starts_with(">") {
-            if last_id != "" {
-                fasta.push(Fasta { id: last_id.to_string(), desc: last_desc.to_string(), seq: last_sequence });
-            }
-            last_sequence = String::from("");
-
-            match line.find(" ") {
-                Some(index) => {
-                    last_id = &line[1..index];
-                    last_desc = &line[index+1..];
-                },
-                None => { 
-                    last_id = &line[1..];
-                    last_desc = "";
-                }
-            };
-            //println!("id and desc: {} {}", last_id, last_desc);
-        }
-        else {
-            last_sequence.push_str(line);
-        }
-    }
-    fasta.push(Fasta { id: last_id.to_string(), desc: last_desc.to_string(), seq: last_sequence }); 
-    logger.information("Finished processing file");
-
-    return fasta;
-}
-
-fn make_hashmap_of_arrays_for_genome(fasta : &Vec<Fasta>, logger : &Logger) -> HashMap<String, Vec<i32>> {
-    logger.information("make_hashmap_of_arrays_for_genome: filling genome array...");
-
-    let mut genome = HashMap::new();
-
-    // go through fasta and make contig array of all zeros
-    for entry in fasta {
-        let contig_array = vec![0;entry.seq.len()];
-        genome.insert(entry.id.to_string(), contig_array);
-    }
-
-    return genome;
-}
-
-//sub fill_genome_hash_array_from_vcf {
-//	my ($genome_hash, $vcf, $settings, $exclude, $include, $min_depth) = @_;
-//
-//	# sometimes 2 vcf lines for the same position are given (Pilon). Only consider the first one
-//	my $last_contig_and_position;
-//	my %variants_found;
-//
-//	my ($ref_count, $variant_count, $min_depth_filtered, $other_filtered) = (0, 0, 0, 0);
-//	warn "fill_genome_hash_array_from_vcf: Saving reference positions (1) and variants (2) over genome array from $vcf (setting=$settings, exclude=$exclude, include=$include, min depth=$min_depth)...\n";
-//	open my $fh, '<', $vcf or die "Cannot open $vcf: $!\n";
-//	VCF: while(my $line=<$fh>) {
-//		chomp $line;
-//
-//		my $VCF_line = vcflines::read_VCF_lines($line);
-//		my $supercontig = $$VCF_line{'supercontig'};
-//		my $position = $$VCF_line{'position'};
-//		my $base_type = $$VCF_line{'base_type0'};
-//
-//		# Ignore ambigious, or contigs of uninterest
-//		next VCF if($$VCF_line{'next'} eq 1);
-//		next VCF if(($exclude !~ m/n/i) && ($supercontig eq $exclude));
-//		next VCF if(($include !~ m/n/i) && ($supercontig ne $include));
-//
-//		# Ignore lines given twice
-//		if(!defined $last_contig_and_position) { $last_contig_and_position = "$supercontig\t$position"; }
-//		else {
-//			my $current_contig_and_position = "$supercontig\t$position";
-//			if($current_contig_and_position eq $last_contig_and_position) {
-//				$last_contig_and_position = $current_contig_and_position;
-//				next VCF;
-//			}
-//			$last_contig_and_position = $current_contig_and_position;
-//		}
-//
-//		# Min depth filtering
-//		if((defined $$VCF_line{'DP0'}) && ($$VCF_line{'DP0'} ne '?'))  {
-//			if($$VCF_line{'DP0'} < $min_depth) {
-//				$min_depth_filtered++;
-//				next VCF;
-//			}
-//		}
-//
-//		# heterozygous sites
-//		if(($settings eq 1) && ($base_type eq 'heterozygous')) {
-//			$other_filtered++;
-//			next VCF;
-//		}
-//		# indels (snp_multi = E.g. ref: ACTCGTCCTGACT consensus: AACTCGTACTGAC)
-//		if(($settings =~ m/[12]/) && ($base_type =~ m/insertion|deletion|snp_multi/)) {
-//			$other_filtered++;
-//			next VCF;
-//		}
-//
-//		# Everything i do want to save
-//		if($base_type !~ m/heterozygous|snp|insertion|deletion|reference/) {
-//			$other_filtered++;
-//			next VCF;
-//		}
-//
-//		# save reference bases
-//		if($base_type =~ m/reference/) {
-//			$ref_count++;
-//			$$genome_hash{$supercontig}[$position] = 1;
-//		} else {
-//			$variant_count++;
-//			$variants_found{$base_type}++;
-//			$$genome_hash{$supercontig}[$position] = 2;
-//		}
-//	}
-//
-//	# summary
-//	warn "Reference bases:\t$ref_count\n";
-//	warn "Variant bases:\t$variant_count\n";
-//	foreach my $type(keys %variants_found) {
-//		my $count = $variants_found{$type};
-//		warn "Variant bases (type=$type)\t$count\n";
-//	}
-//	warn "Excluded for < min depth:\t$min_depth_filtered\n";
-//	warn "Excluded for base type:\t$other_filtered\n";
-//	return $genome_hash;
-//}
-
-struct VCFsamples {
-    header:String,
-    samples:HashMap<usize, String>,
-}
-
-struct VCFEntry {
-    contig:String,
-    position:String,
-    id:String,
-    ref_base:String,
-    alt_base:String,
-    cons_qual:String,
-    filter:String,
-    info:String,
-    format:String,
-    samples:HashMap<usize, String>,
-    samples_to_genotype:HashMap<String, String>,
-    samples_to_base1:HashMap<String, String>,
-    samples_to_base2:HashMap<String, String>,
-    samples_to_base_type:HashMap<String, String>,
-}
-
-fn read_genotype_position(format : &str, logger : &Logger) -> usize {
-    if format.starts_with("GT") {
-        return 0;
-    }
-    
-    let format_string = format.to_string();
-    let format_parts : Vec<&str> = format_string.split(':').collect();
-
-    for(index, format_part) in format_parts.iter().enumerate() {
-        if format_part.to_string().to_uppercase() == "GT" {
-            return index;
-        }
-    }
-
-    logger.error(&format!("Error with vcf line (no genotype found): {}", format));
-    process::exit(1);
-}
-
-fn create_sample_to_genotype(samples : &[&str], gt_pos : usize, sample_names : &HashMap<usize, String>) -> HashMap<String, String> {
-
-    let mut sample_to_genotype = HashMap::new();
-
-    for(index, sample) in samples.iter().enumerate() {
-        let sample_parts : Vec<&str> = sample.split(':').collect();
-        let sample_name = &sample_names[&index];
-        let genotype = match sample_parts[gt_pos] {
-            "0/0" => "0",
-            "1/1" => "1",
-            "0|0" => "0",
-            "1|1" => "1",
-            _ => sample_parts[gt_pos]
-        };
-
-        sample_to_genotype.insert(sample_name.to_string(), genotype.to_string());
-    }
-
-    sample_to_genotype
-}
-
-fn determine_bases_and_base_type(samples_to_genotype: &HashMap<String, String>, ref_base : &String, alt_base : &String, logger : &Logger) -> (HashMap<String, String>, HashMap<String, String>, HashMap<String, String>) {
-    let mut sample_to_base1 = HashMap::new();
-    let mut sample_to_base2 = HashMap::new();
-    let mut sample_to_base_type = HashMap::new();
-
-    // loop over each sample and fill hash maps
-    for (sample, genotype) in samples_to_genotype.iter() {
-        let (base1, base2, base_type) = determine_bases_and_base_type_single_sample(&genotype, &ref_base, &alt_base, &logger);
-        sample_to_base1.insert(sample.to_string(), base1);
-        sample_to_base2.insert(sample.to_string(), base2);
-        sample_to_base_type.insert(sample.to_string(), base_type);
-    }
-
-    (sample_to_base1, sample_to_base2, sample_to_base_type)
-}
-
-fn determine_bases_and_base_type_single_sample(genotype: &String, ref_base : &String, alt_base : &String, logger : &Logger) -> (String, String, String) {
-
-    let mut base1 = "N".to_string();
-    let mut base2 = "None".to_string();
-    let mut base_type = "ambiguous".to_string();
-
-    // Save bases and GT parts
-    let consensus_bases : Vec<&str> = alt_base.split(',').collect();
-    let mut all_bases = vec![ref_base.as_str()];
-    all_bases.extend(consensus_bases.iter().cloned());
-
-    //logger.warning("determine_bases_and_base_type_single_sample");
-
-    let gt_parts : Vec<&str> = genotype.split(|c| c == '/' || c == '|').collect();
-    let mut gt_bases : Vec<&str> = Vec::new();
-    for gt_part in gt_parts.iter() {
-        let mut index = 0;
-
-        // Ambiguous GT (all things non numerical such as . or *)
-        match gt_part.parse::<usize>() {
-            Ok(n) => {
-                index = n;
-            },
-            Err(e) => {
-                base1 = "N".to_string();
-                base_type = "ambiguous".to_string();
-                return (base1, base2, base_type);
-            }
-        }
-
-        // No base defined
-        if((all_bases.len()-1) < index) {
-            logger.error(&format!("vcf parsing genotype error: No {} defined from ref {} and cons {}", index, ref_base, alt_base));
-            process::exit(1);
-        }
-
-        let gt_base = all_bases[index];
-
-        // Ambiguous bases
-        if(gt_base == "N") || (gt_base == ".") || (gt_base == "*") {
-            base1 = "N".to_string();
-            base_type = "ambiguous".to_string();
-            return (base1, base2, base_type);
-        }
-
-        // save the bases
-        gt_bases.push(gt_base);
-    }
-
-	// Homozygous ref-calls
-    if genotype == "0" {
-        base1 = ref_base.to_string();
-	    base_type = "reference".to_string();
-	 	return (base1, base2, base_type);
-    }
-
-	// Homozygous non-reference
-    if genotype != "0" && gt_bases.len() == 1 {
-        let get_base = gt_bases[0];
-
-        // Homozygous SNP
-        if ref_base.len() == get_base.len() {
-
-            // Simple Homozygous SNP
-            if get_base.len() == 1 {
-                base1 = get_base.to_string();
-	 			base_type = "snp".to_string();
-	 			return (base1, base2, base_type);
-            }
-
-            // SNP(s) disguised as an indel
-            let mut snp_count = 0;
-            let mut ref_base_saved = "".to_string();
-            let mut cons_base_saved = "".to_string();
-            for(index, consensus_base_char) in get_base.chars().enumerate() {
-                let ref_base_char = ref_base.chars().nth(index).unwrap();
-                if ref_base_char != consensus_base_char {
-                    ref_base_saved = ref_base_char.to_string();
-					cons_base_saved = consensus_base_char.to_string();
-					snp_count+=1;
-                }
-            }
-
-            return match snp_count{
-                0 => {
-                    base1 = ref_base.to_string();
-	 			    base_type = "reference".to_string();
-	 			    (base1, base2, base_type)
-                }
-                1 => {
-                    base1 = ref_base_saved;
-				    base2 = cons_base_saved;
-				    base_type = "snp".to_string();
-				    (base1, base2, base_type)
-                }
-                _ => {
-                    base1 = get_base.to_string();
-	 			    base_type = format!("snp_multi_{}", snp_count);
-	 			    (base1, base2, base_type)
-                }
-            };
-        }
-
-        // Homozygous indel
-        base1 = get_base.to_string();
-        // Deletion
-        if ref_base.len() > get_base.len() {
-	 		base_type = "deletion".to_string();
-	 		return (base1, base2, base_type);
-        }
-        // Insertion
-	 	base_type = "insertion".to_string();
-	 	return (base1, base2, base_type);
-    }
-
-	// Bi-allelic heterozygous positions & indels
-    if gt_bases.len() == 2 {
-        let base1 = gt_bases[0].to_string();
-        let base2 = gt_bases[1].to_string();
-        base_type = "heterozygous".to_string();
-        if base1.len() < base2.len() { base_type = "het_insertion".to_string(); }
-        if base1.len() > base2.len() { base_type = "het_deletion".to_string(); }
-        return (base1, base2, base_type);
-    }
-
-    // polyploid?
-    if gt_bases.len() > 2 {
-        logger.error(&format!("polyploid not implemented currently: {}", genotype));
-        process::exit(1);
-    }
-
-    logger.error(&format!("Unexpected genotype: {}", genotype));
-    process::exit(1);
-}
-
-
-
-fn read_vcf_line(line : &str, logger : &Logger) -> VCFEntry {
-
-    let line_parts : Vec<&str> = line.split('\t').collect();
-    let contig = line_parts[0].to_string();
-    let position = line_parts[1].to_string();
-    let id = line_parts[2].to_string();
-    let ref_base = line_parts[3].to_string();
-    let alt_base = line_parts[4].to_string();
-    let cons_qual = line_parts[5].to_string();
-    let filter = line_parts[6].to_string();
-    let info = line_parts[7].to_string();
-    let format = line_parts[8].to_string();
-
-    // Initial quality check
-    if line_parts.len() < 9 {
-        logger.error(&format!("Error with vcf line: {}", line));
-        process::exit(1);
-    }
-
-    // get sample info
-    let mut sample_names = HashMap::new();
-    for(index, sample_name) in line_parts[9..].iter().enumerate() {
-        sample_names.insert(index, sample_name.to_string());
-    }
-
-    // get genotype
-    let gt_position = read_genotype_position(line_parts[8], logger);
-    let samples_to_genotype = create_sample_to_genotype(&line_parts[9..], gt_position, &sample_names);
-
-    // Determine what base it is
-    let (samples_to_base1, samples_to_base2, samples_to_base_type) = determine_bases_and_base_type(&samples_to_genotype, &ref_base, &alt_base, &logger);
-
-    // return various info for vcf entry
-    VCFEntry{
-        contig,
-        position,
-        id,
-        ref_base,
-        alt_base,
-        cons_qual,
-        filter,
-        info,
-        format,
-        samples:sample_names,
-        samples_to_genotype,
-        samples_to_base1,
-        samples_to_base2,
-        samples_to_base_type,
-    }
-}
-
-fn read_vcf(name_type_location : &NameTypeLocation, logger : &Logger) {
-    logger.information(&format!("read VCF: {}", name_type_location.location));
-
-    // read file
-    let vcf_file = fs::read_to_string(&name_type_location.location).unwrap_or_else(|error|{
-        logger.error(&format!("Error with file: {} {}", name_type_location.location, error));
-        process::exit(1);
-    });
-
-    let mut vcf_samples:Option<VCFsamples> = None;
-
-    // go through each line of the VCF
-    for line in vcf_file.lines() {
-
-        // Metadata
-        if line.starts_with("##") { 
-            continue; 
-        }
-        // Header
-        if line.starts_with("#CHROM\tPOS\tID\tREF") { 
-
-            let line_parts : Vec<&str> = line.split('\t').collect();
-            let mut sample_names = HashMap::new();
-            for(index, sample_name) in line_parts[9..].iter().enumerate() {
-                logger.warning(&format!("index = {}", index));
-                sample_names.insert(index, sample_name.to_string());
-            }
-
-            vcf_samples = Some(VCFsamples{
-                header:line.to_string(),
-                samples:sample_names,
-            });
-
-            logger.warning(line);
-
-            continue; 
-        }
-
-        // Entries
-        let vcfentry = read_vcf_line(line, logger);
-
-        
-
-    }
-}
-
 fn main() {
 
     let args = Args::parse();
     let logger = Logger;
 
     // Read Name Type Location file
-    let name_type_locations = read_name_type_location_file(&args.name_type_location_filename, &logger);
+    let name_type_locations = read_tab::read_name_type_location_file(&args.name_type_location_filename, &logger);
 
     // Info about VCF's
     let number_of_vcfs = name_type_locations.len();
     println!("{} VCF files specified", number_of_vcfs);
 
     // Read FASTA file to memory
-    let fasta = read_fasta(args.fasta_filename, &logger);
+    let fasta = read_fasta::read_fasta(args.fasta_filename, &logger);
 
     // go through entries
     for entry in &fasta {
@@ -597,11 +106,11 @@ fn main() {
     logger.output(&format!("Outfile variant bases = {}", outfile_variant_bases));
 
     // Save genome to hashmap of arrays
-    let mut genome = make_hashmap_of_arrays_for_genome(&fasta, &logger);
+    let mut genome = genome_array::make_hashmap_of_arrays_for_genome(&fasta, &logger);
 
     // go through each VCF
     for name_type_location in &name_type_locations {
-        read_vcf(name_type_location, &logger);
+        read_vcf::read_vcf(name_type_location, &logger);
     }
 
     //# Convert ref bases to 1 and variants to 2
