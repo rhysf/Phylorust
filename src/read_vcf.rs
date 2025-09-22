@@ -55,8 +55,8 @@ pub fn read_vcf(name_type_location : &NameTypeLocation, logger : &Logger) -> Vec
             }
             let mut sample_names = HashMap::new();
 
-            logger.information(&format!("Header line: {}", line));
-            logger.information(&format!("Parsed sample names: {:?}", &line_parts[9..]));
+            //logger.information(&format!("Header line: {}", line));
+            //logger.information(&format!("Parsed sample names: {:?}", &line_parts[9..]));
             for(index, sample_name) in line_parts[9..].iter().enumerate() {
                 //logger.warning(&format!("index = {}", index));
                 sample_names.insert(index, sample_name.to_string());
@@ -76,7 +76,7 @@ pub fn read_vcf(name_type_location : &NameTypeLocation, logger : &Logger) -> Vec
         let vcf_samples_ref = match vcf_samples.as_ref() {
             Some(samples) => samples,
             None => {
-                logger.error("VCF header line missing.");
+                logger.error("read_vcf: VCF header line missing.");
                 process::exit(1);
             }
         };
@@ -107,10 +107,7 @@ fn read_vcf_line(line : &str, logger : &Logger, samples: &VCFsamples) -> VCFEntr
     }
 
     // get sample info
-    let mut sample_names = HashMap::new();
-    for(index, sample_name) in line_parts[9..].iter().enumerate() {
-        sample_names.insert(index, sample_name.to_string());
-    }
+    let sample_names = samples.samples.clone();
 
     // get genotype
     let gt_position = read_genotype_position(line_parts[8], logger);

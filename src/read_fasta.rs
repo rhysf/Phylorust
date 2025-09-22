@@ -9,7 +9,7 @@ pub struct Fasta {
 }
 
 pub fn read_fasta(file : String, logger : &Logger) -> Vec<Fasta> {
-    println!("Processing file: {}", file);
+    println!("read_fasta: processing file: {}", file);
 
     // read file
     let fasta_file = fs::read_to_string(&file).unwrap_or_else(|error|{
@@ -48,7 +48,7 @@ pub fn read_fasta(file : String, logger : &Logger) -> Vec<Fasta> {
         }
     }
     fasta.push(Fasta { id: last_id.to_string(), desc: last_desc.to_string(), seq: last_sequence }); 
-    logger.information("Finished processing file");
+    logger.information("read_fasta: Finished processing file");
 
     return fasta;
 }

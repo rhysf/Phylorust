@@ -10,7 +10,7 @@ pub struct NameTypeLocation {
 }
 
 pub fn read_name_type_location_file(file : &str, logger : &Logger) -> Vec<NameTypeLocation> {
-    logger.information(&format!("Processing file: {}", file));
+    logger.information(&format!("read_name_type_location_file: Processing file: {}", file));
 
     let mut name_type_locations = Vec::new();
 
