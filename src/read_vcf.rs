@@ -10,23 +10,23 @@ pub struct VCFsamples {
 }
 
 pub struct VCFEntry {
-    contig:String,
-    position:String,
-    id:String,
-    ref_base:String,
-    alt_base:String,
-    cons_qual:String,
-    filter:String,
-    info:String,
-    format:String,
-    samples:HashMap<usize, String>,
-    samples_to_genotype:HashMap<String, String>,
-    samples_to_base1:HashMap<String, String>,
-    samples_to_base2:HashMap<String, String>,
-    samples_to_base_type:HashMap<String, String>,
+    pub contig:String,
+    pub position:String,
+    pub id:String,
+    pub ref_base:String,
+    pub alt_base:String,
+    pub cons_qual:String,
+    pub filter:String,
+    pub info:String,
+    pub format:String,
+    pub samples:HashMap<usize, String>,
+    pub samples_to_genotype:HashMap<String, String>,
+    pub samples_to_base1:HashMap<String, String>,
+    pub samples_to_base2:HashMap<String, String>,
+    pub samples_to_base_type:HashMap<String, String>,
 }
 
-pub fn read_vcf(name_type_location : &NameTypeLocation, logger : &Logger) {
+pub fn read_vcf(name_type_location : &NameTypeLocation, logger : &Logger) -> Vec<VCFEntry> {
     logger.information(&format!("read VCF: {}", name_type_location.location));
 
     // read file
@@ -35,6 +35,7 @@ pub fn read_vcf(name_type_location : &NameTypeLocation, logger : &Logger) {
         process::exit(1);
     });
 
+    let mut vcf_entries: Vec<VCFEntry> = Vec::new();
     let mut vcf_samples:Option<VCFsamples> = None;
 
     // go through each line of the VCF
@@ -45,12 +46,19 @@ pub fn read_vcf(name_type_location : &NameTypeLocation, logger : &Logger) {
             continue; 
         }
         // Header
-        if line.starts_with("#CHROM\tPOS\tID\tREF") { 
+        if line.starts_with("#CHROM") { 
 
             let line_parts : Vec<&str> = line.split('\t').collect();
+            if line_parts.len() < 10 {
+                logger.error("VCF header line does not contain sample columns.");
+                process::exit(1);
+            }
             let mut sample_names = HashMap::new();
+
+            logger.information(&format!("Header line: {}", line));
+            logger.information(&format!("Parsed sample names: {:?}", &line_parts[9..]));
             for(index, sample_name) in line_parts[9..].iter().enumerate() {
-                logger.warning(&format!("index = {}", index));
+                //logger.warning(&format!("index = {}", index));
                 sample_names.insert(index, sample_name.to_string());
             }
 
@@ -59,17 +67,27 @@ pub fn read_vcf(name_type_location : &NameTypeLocation, logger : &Logger) {
                 samples:sample_names,
             });
 
-            logger.warning(line);
+            //logger.warning(line);
 
             continue; 
         }
 
         // Entries
-        let vcfentry = read_vcf_line(line, logger);
+        let vcf_samples_ref = match vcf_samples.as_ref() {
+            Some(samples) => samples,
+            None => {
+                logger.error("VCF header line missing.");
+                process::exit(1);
+            }
+        };
+        
+        let vcfentry = read_vcf_line(line, logger, vcf_samples_ref);
+        vcf_entries.push(vcfentry);
     }
+    vcf_entries
 }
 
-fn read_vcf_line(line : &str, logger : &Logger) -> VCFEntry {
+fn read_vcf_line(line : &str, logger : &Logger, samples: &VCFsamples) -> VCFEntry {
 
     let line_parts : Vec<&str> = line.split('\t').collect();
     let contig = line_parts[0].to_string();
@@ -96,7 +114,7 @@ fn read_vcf_line(line : &str, logger : &Logger) -> VCFEntry {
 
     // get genotype
     let gt_position = read_genotype_position(line_parts[8], logger);
-    let samples_to_genotype = create_sample_to_genotype(&line_parts[9..], gt_position, &sample_names);
+    let samples_to_genotype = create_sample_to_genotype(&line_parts[9..], gt_position, &samples.samples);
 
     // Determine what base it is
     let (samples_to_base1, samples_to_base2, samples_to_base_type) = determine_bases_and_base_type(&samples_to_genotype, &ref_base, &alt_base, &logger);
@@ -198,7 +216,7 @@ fn determine_bases_and_base_type_single_sample(genotype: &String, ref_base : &St
             Ok(n) => {
                 index = n;
             },
-            Err(e) => {
+            Err(_e) => {
                 base1 = "N".to_string();
                 base_type = "ambiguous".to_string();
                 return (base1, base2, base_type);
@@ -206,7 +224,7 @@ fn determine_bases_and_base_type_single_sample(genotype: &String, ref_base : &St
         }
 
         // No base defined
-        if((all_bases.len()-1) < index) {
+        if(all_bases.len()-1) < index {
             logger.error(&format!("vcf parsing genotype error: No {} defined from ref {} and cons {}", index, ref_base, alt_base));
             process::exit(1);
         }

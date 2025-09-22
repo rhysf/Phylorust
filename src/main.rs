@@ -2,6 +2,7 @@ use clap::Parser;
 use std::fs::{self};
 use std::process;
 use std::path::Path;
+use std::collections::HashMap;
 mod logger;
 use logger::Logger;
 
@@ -16,7 +17,7 @@ mod genome_array;
 
 // use read_fasta::Fasta;
 // use read_vcf::VCFsamples;
-// use read_vcf::VCFEntry;
+use read_vcf::VCFEntry;
 // use read_tab::NameTypeLocation;
 
 // setting up the command line parameters
@@ -109,8 +110,58 @@ fn main() {
     let mut genome = genome_array::make_hashmap_of_arrays_for_genome(&fasta, &logger);
 
     // go through each VCF
+    let mut all_entries: HashMap<String, Vec<VCFEntry>> = HashMap::new();
     for name_type_location in &name_type_locations {
-        read_vcf::read_vcf(name_type_location, &logger);
+        let entries = read_vcf::read_vcf(name_type_location, &logger);
+
+        logger.information(&format!(
+            "{}: {} variants parsed",
+            name_type_location.location,
+            entries.len()
+        ));
+
+        if let Some(first_entry) = entries.first() {
+            let sample_names: Vec<String> = first_entry
+                .samples
+                .values()
+                .cloned()
+                .collect();
+    
+            logger.information(&format!("Samples: {:?}", sample_names));
+        }
+
+        // Variants per sample
+        let mut sample_variant_counts: HashMap<String, usize> = HashMap::new();
+
+        for entry in &entries {
+            for (sample_name, genotype) in &entry.samples_to_genotype {
+                if !genotype.is_empty() && genotype != "." {
+                    *sample_variant_counts.entry(sample_name.clone()).or_insert(0) += 1;
+                }
+            }
+        }
+
+        for (sample, count) in &sample_variant_counts {
+            logger.information(&format!("Sample '{}' has {} variants", sample, count));
+        }
+
+        // Show a few example variants
+        logger.information("First variant:");
+        for entry in entries.iter().take(1) {
+            logger.information(&format!(
+                "{}:{} {}>{} (GT={:?})",
+                entry.contig,
+                entry.position,
+                entry.ref_base,
+                entry.alt_base,
+                entry.samples_to_genotype
+            ));
+    }
+
+    logger.information("──────────────────────────────");
+    
+        // store all entries across files
+        all_entries.insert(name_type_location.location.clone(), entries);
     }
 
     //# Convert ref bases to 1 and variants to 2
