@@ -2,7 +2,7 @@ use clap::Parser;
 use std::fs::{self};
 use std::process;
 use std::path::Path;
-use std::collections::HashMap;
+use std::collections::{HashSet, HashMap};
 mod logger;
 use logger::Logger;
 
@@ -10,50 +10,20 @@ use logger::Logger;
 // use std::ops::Index;
 // use std::collections::HashMap;
 
+mod args;
 mod read_vcf;
 mod read_fasta;
 mod read_tab;
 mod genome_array;
+mod read_genome_array_summary;
+mod fasta_from_sites;
 
+use args::Args;
+// use read_genome_array_summary::write_site_position_files;
 // use read_fasta::Fasta;
 // use read_vcf::VCFsamples;
 use read_vcf::VCFEntry;
 // use read_tab::NameTypeLocation;
-
-// setting up the command line parameters
-#[derive(Parser)]
-#[command(name = "RustaTools")]
-#[command(about = "A simple command-line tool fopr calculating Entirely Covered in All sites", long_about = None)]
-
-struct Args {
-    /// reference FASTA
-    #[arg(short='f', long="fasta")]
-    fasta_filename: String, 
-
-    /// tab delimited file containing isolate name, type (VCF) and VCF location
-    #[arg(short='n', long="name_type_location")]
-    name_type_location_filename: String,
-
-    /// Output directory 
-    #[arg(short='o', long="output_dir", default_value="Rustatools_output")]
-    output_dir: String,
-
-    /// Settings 
-    #[arg(short='s', long="settings", default_value_t=1)]
-    settings: u8,
-
-    // Minimum read depth
-    #[arg(short='m', long="min_read_depth", default_value_t=4)]
-    min_read_depth: u8,
-
-    /// Exclude variants on contig 
-    #[arg(short='e', long="exclude_contig", default_value="n")]
-    exclude_contig: String,
-
-    /// Exclude variants not on contig 
-    #[arg(short='z', long="restrict_contig", default_value="n")]
-    restrict_contig: String,
-}
 
 fn main() {
 
@@ -63,18 +33,8 @@ fn main() {
     // Read Name Type Location file
     let name_type_locations = read_tab::read_name_type_location_file(&args.name_type_location_filename, &logger);
 
-    // Info about VCF's
-    //let number_of_vcfs = name_type_locations.len();
-    //println!("{} VCF files specified", number_of_vcfs);
-
     // Read FASTA file to memory
-    let fasta = read_fasta::read_fasta(args.fasta_filename, &logger);
-
-    // go through entries
-    //for entry in &fasta {
-    //    logger.information(&format!("id and desc: {} {}", entry.id, entry.desc));
-    //    logger.information(&format!("length of seq: {}", entry.seq.len()));
-    //}
+    let fasta = read_fasta::read_fasta(args.fasta_filename.clone(), &logger);
 
     // Make output folder
     fs::create_dir_all(&args.output_dir).unwrap_or_else(|error|{
@@ -82,98 +42,104 @@ fn main() {
         process::exit(1);
     });
 
-    // Output files
-    let name_type_location_filename_path = Path::new(&args.name_type_location_filename);
-    let name_type_location_filename_wo_dir = name_type_location_filename_path.file_name().unwrap().to_str();
-    //logger.output(name_type_location_filename_wo_dir.unwrap());
+    // go through each VCF converting to summary files of reference and variant positions
+    let mut global_sample_names: HashSet<String> = HashSet::new();
+    let mut reference_paths: Vec<String> = Vec::new();
+    let mut variant_paths: Vec<String> = Vec::new();
+    let mut vcf_entries_by_sample: HashMap<String, Vec<VCFEntry>> = HashMap::new();
+    for name_type_location in &name_type_locations {
+        logger.information("──────────────────────────────");
 
-    let rustatools_settings = &format!("m-{}-s-{}-e-{}-z-{}", 
-        args.min_read_depth, 
-        args.settings, 
-        args.exclude_contig, 
-        args.restrict_contig);
-    
-    let outfile_reference_bases = &format!("{}/{}-{}-reference-bases.tab", 
-        args.output_dir,
-        name_type_location_filename_wo_dir.unwrap(),
-        rustatools_settings);
+        // Output files
+        let vcf_path = &name_type_location.location;
+        let (outfile_reference_bases, outfile_variant_bases) = generate_output_filenames(&args, &logger, vcf_path);
+        reference_paths.push(outfile_reference_bases.clone());
+        variant_paths.push(outfile_variant_bases.clone());
 
-    let outfile_variant_bases = &format!("{}/{}-{}-variant-bases.tab", 
-        args.output_dir,
-        name_type_location_filename_wo_dir.unwrap(),
-        rustatools_settings);
+        // Read VCF
+        let entries = read_vcf::read_vcf(name_type_location, &logger, &mut global_sample_names);
+        logger.information(&format!("{}: {} vcf positions parsed", name_type_location.location, entries.len()));
+        read_vcf::count_variants(&entries, &logger);
+
+        // Group VCF entries by sample
+        for entry in &entries {
+            for sample_name in entry.samples_to_base_type.keys().cloned() {
+                //logger.information(&format!("Assigning entry to sample: {}", sample_name));
+                vcf_entries_by_sample
+                    .entry(sample_name)
+                    .or_default()
+                    .push(entry.clone());
+            }
+        }
+
+        // Skip if already written
+        if Path::new(&outfile_reference_bases).exists() && Path::new(&outfile_variant_bases).exists() {
+            logger.warning(&format!("Skipping genome/region output for {} — output files already exist.", vcf_path));
+            continue;
+        }
+
+        // Save genome to hashmap of arrays
+        let genome = genome_array::make_hashmap_of_arrays_for_genome(&fasta, &logger);
+
+        // Convert 0->1 for reference, and 0->2 for variants
+        let genome = genome_array::fill_genome_hash_array_from_vcf(&logger, &entries, genome, args.settings);
+
+        // Print tab files for locations of 1s (reference)
+        genome_array::write_regions_from_genome_array(&genome, 1, &outfile_reference_bases, &logger);
+
+        // Print tab files for locations of 1s (variant)
+        genome_array::write_regions_from_genome_array(&genome, 2, &outfile_variant_bases, &logger);
+    }
+    logger.information("──────────────────────────────");
+
+    // Go through all reference and variant files and find 'ECA' sites
+    let variant_counts = read_genome_array_summary::load_contig_position_counts(&variant_paths, &logger);
+    let reference_counts = read_genome_array_summary::load_contig_position_counts(&reference_paths, &logger);
+    logger.information("──────────────────────────────");
+
+    // Summarise
+    let histogram_positions = read_genome_array_summary::load_or_generate_histogram(&variant_counts, &reference_counts, &vcf_entries_by_sample, name_type_locations.len(), &args, &logger);
+    read_genome_array_summary::write_site_position_files(&histogram_positions, &args.output_dir, &logger);
+    // let fasta_for_percent = 
+    logger.information(&format!(
+        "vcf_entries_by_sample has {} samples",
+        vcf_entries_by_sample.len()
+    ));
+
+    for (sample, entries) in &vcf_entries_by_sample {
+        logger.information(&format!("Sample: {} has {} entries", sample, entries.len()));
+    }
+    fasta_from_sites::generate_fasta_for_percent_site_set(args.percent_for_tree, &histogram_positions, &fasta, &vcf_entries_by_sample, &args, &logger);
+}
+
+fn generate_output_filenames(args: &Args, logger: &Logger, vcf_path: &str) -> (String, String) {
+
+    let vcf_filename = Path::new(vcf_path)
+        .file_name()
+        .expect("Failed to extract VCF filename")
+        .to_string_lossy()
+        .to_string();
+
+    let rustatools_settings = format!(
+        "m-{}-s-{}-e-{}-z-{}",
+        args.min_read_depth,
+        args.settings,
+        args.exclude_contig,
+        args.restrict_contig
+    );
+
+    let outfile_reference_bases = format!(
+        "{}/{}-{}-reference-bases.tab",
+        args.output_dir, vcf_filename, rustatools_settings
+    );
+
+    let outfile_variant_bases = format!(
+        "{}/{}-{}-variant-bases.tab",
+        args.output_dir, vcf_filename, rustatools_settings
+    );
 
     logger.output(&format!("Outfile reference bases = {}", outfile_reference_bases));
     logger.output(&format!("Outfile variant bases = {}", outfile_variant_bases));
 
-    // Save genome to hashmap of arrays
-    let mut genome = genome_array::make_hashmap_of_arrays_for_genome(&fasta, &logger);
-
-    // go through each VCF
-    let mut all_entries: HashMap<String, Vec<VCFEntry>> = HashMap::new();
-    for name_type_location in &name_type_locations {
-        let entries = read_vcf::read_vcf(name_type_location, &logger);
-
-        logger.information(&format!(
-            "{}: {} variants parsed",
-            name_type_location.location,
-            entries.len()
-        ));
-
-        if let Some(first_entry) = entries.first() {
-            let sample_names: Vec<String> = first_entry
-                .samples
-                .values()
-                .cloned()
-                .collect();
-    
-            logger.information(&format!("Samples: {:?}", sample_names));
-        }
-
-        // Variants per sample
-        let mut sample_type_counts: HashMap<String, HashMap<String, usize>> = HashMap::new();
-
-        for entry in &entries {
-            for (sample, base_type) in &entry.samples_to_base_type {
-                // Skip non-variants/ambiguous
-                if base_type == "reference" || base_type == "ambiguous" { continue; }
-
-                let per_sample = sample_type_counts.entry(sample.clone()).or_default();
-                *per_sample.entry(base_type.clone()).or_insert(0) += 1;
-            }
-        }
-
-        // Print a concise summary
-        for (sample, buckets) in &sample_type_counts {
-            let snps = buckets.get("snp").copied().unwrap_or(0)
-                    + buckets.get("heterozygous").copied().unwrap_or(0);
-            let ins  = buckets.get("insertion").copied().unwrap_or(0)
-                    + buckets.get("het_insertion").copied().unwrap_or(0);
-            let del  = buckets.get("deletion").copied().unwrap_or(0)
-                    + buckets.get("het_deletion").copied().unwrap_or(0);
-
-            logger.information(&format!(
-                "Sample '{}' — SNPs: {}, insertions: {}, deletions: {}",
-                sample, snps, ins, del
-            ));
-        }
-
-        logger.information("──────────────────────────────");
-    
-        // store all entries across files
-        all_entries.insert(name_type_location.location.clone(), entries);
-    }
-
-    //# Convert ref bases to 1 and variants to 2
-    // Start by doing this for a single VCF, and then put in a loop to do it for every VCF
-    //$genome_array = genomearray::fill_genome_hash_array_from_vcf($genome_array, $opt_v, $opt_s, $opt_e, $opt_z, $opt_m);
-
-    //# Print tab files for locations of 1s (reference)
-    //genomearray::print_tab_file_from_regions_in_genome_hash($fasta, $genome_array, 1, $outfile1);
-
-    //# Print tab files for locations of 1s (variant)
-    //genomearray::print_tab_file_from_regions_in_genome_hash($fasta, $genome_array, 2, $outfile2);
-
-    logger.output("output test");
-    logger.warning("output test");
+    (outfile_reference_bases, outfile_variant_bases)
 }

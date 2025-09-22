@@ -2,16 +2,17 @@ use crate::logger::Logger;
 use crate::read_tab::NameTypeLocation;
 use std::fs::{self};
 use std::process;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 pub struct VCFsamples {
     header:String,
     samples:HashMap<usize, String>,
 }
 
+#[derive(Debug, Clone)]
 pub struct VCFEntry {
     pub contig:String,
-    pub position:String,
+    pub position:usize,
     pub id:String,
     pub ref_base:String,
     pub alt_base:String,
@@ -26,7 +27,7 @@ pub struct VCFEntry {
     pub samples_to_base_type:HashMap<String, String>,
 }
 
-pub fn read_vcf(name_type_location : &NameTypeLocation, logger : &Logger) -> Vec<VCFEntry> {
+pub fn read_vcf(name_type_location : &NameTypeLocation, logger : &Logger, global_sample_names: &mut HashSet<String>) -> Vec<VCFEntry> {
     logger.information(&format!("read VCF: {}", name_type_location.location));
 
     // read file
@@ -57,18 +58,32 @@ pub fn read_vcf(name_type_location : &NameTypeLocation, logger : &Logger) -> Vec
 
             //logger.information(&format!("Header line: {}", line));
             //logger.information(&format!("Parsed sample names: {:?}", &line_parts[9..]));
-            for(index, sample_name) in line_parts[9..].iter().enumerate() {
-                //logger.warning(&format!("index = {}", index));
-                sample_names.insert(index, sample_name.to_string());
+            for(index, sample_name_raw) in line_parts[9..].iter().enumerate() {
+                let mut sample_name = sample_name_raw.to_string();
+
+                // Make name unique if it's already been used
+                if global_sample_names.contains(&sample_name) {
+                    let mut counter = 1;
+                    let original = sample_name.clone();
+                    while global_sample_names.contains(&sample_name) {
+                        sample_name = format!("{}-{}", original, counter);
+                        counter += 1;
+                    }
+
+                    logger.warning(&format!(
+                        "Duplicate sample name detected: Sample '{}' renamed to '{}'.",
+                        original, sample_name
+                    ));
+                }
+
+                global_sample_names.insert(sample_name.clone());
+                sample_names.insert(index, sample_name);
             }
 
             vcf_samples = Some(VCFsamples{
                 header:line.to_string(),
                 samples:sample_names,
             });
-
-            //logger.warning(line);
-
             continue; 
         }
 
@@ -91,7 +106,11 @@ fn read_vcf_line(line : &str, logger : &Logger, samples: &VCFsamples) -> VCFEntr
 
     let line_parts : Vec<&str> = line.split('\t').collect();
     let contig = line_parts[0].to_string();
-    let position = line_parts[1].to_string();
+    let position: usize = line_parts[1].parse::<usize>().unwrap_or_else(|_| {
+        logger.warning(&format!("Invalid position value in VCF: '{}'", line_parts[1]));
+        process::exit(1);
+    });
+    //let position = line_parts[1];
     let id = line_parts[2].to_string();
     let ref_base = line_parts[3].to_string();
     let alt_base = line_parts[4].to_string();
@@ -323,4 +342,31 @@ fn determine_bases_and_base_type_single_sample(genotype: &String, ref_base : &St
 
     logger.error(&format!("Unexpected genotype: {}", genotype));
     process::exit(1);
+}
+
+pub fn count_variants(entries: &[VCFEntry], logger: &Logger) {
+    let mut sample_type_counts: HashMap<String, HashMap<String, usize>> = HashMap::new();
+
+    for entry in entries {
+        for (sample, base_type) in &entry.samples_to_base_type {
+            // Skip non-variants or ambiguous calls
+            if base_type == "reference" || base_type == "ambiguous" {
+                continue;
+            }
+
+            let per_sample = sample_type_counts.entry(sample.clone()).or_default();
+            *per_sample.entry(base_type.clone()).or_insert(0) += 1;
+        }
+    }
+
+    for (sample, buckets) in &sample_type_counts {
+        let snps = buckets.get("snp").copied().unwrap_or(0) + buckets.get("heterozygous").copied().unwrap_or(0);
+        let ins = buckets.get("insertion").copied().unwrap_or(0) + buckets.get("het_insertion").copied().unwrap_or(0);
+        let del = buckets.get("deletion").copied().unwrap_or(0) + buckets.get("het_deletion").copied().unwrap_or(0);
+
+        logger.information(&format!(
+            "Sample '{}' — SNPs: {}, insertions: {}, deletions: {}",
+            sample, snps, ins, del
+        ));
+    }
 }

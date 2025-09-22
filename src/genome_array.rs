@@ -1,9 +1,12 @@
 use crate::logger::Logger;
 use crate::read_fasta::Fasta;
+use crate::read_vcf::VCFEntry;
 use std::collections::HashMap;
+use std::fs::File;
+use std::io::{BufWriter, Write};
 
 pub fn make_hashmap_of_arrays_for_genome(fasta : &Vec<Fasta>, logger : &Logger) -> HashMap<String, Vec<i32>> {
-    logger.information("make_hashmap_of_arrays_for_genome: filling genome array...");
+    logger.information("make_hashmap_of_arrays_for_genome: initialising genome array...");
 
     let mut genome = HashMap::new();
 
@@ -16,84 +19,121 @@ pub fn make_hashmap_of_arrays_for_genome(fasta : &Vec<Fasta>, logger : &Logger) 
     return genome;
 }
 
-//sub fill_genome_hash_array_from_vcf {
-//	my ($genome_hash, $vcf, $settings, $exclude, $include, $min_depth) = @_;
-//
-//	# sometimes 2 vcf lines for the same position are given (Pilon). Only consider the first one
-//	my $last_contig_and_position;
-//	my %variants_found;
-//
-//	my ($ref_count, $variant_count, $min_depth_filtered, $other_filtered) = (0, 0, 0, 0);
-//	warn "fill_genome_hash_array_from_vcf: Saving reference positions (1) and variants (2) over genome array from $vcf (setting=$settings, exclude=$exclude, include=$include, min depth=$min_depth)...\n";
-//	open my $fh, '<', $vcf or die "Cannot open $vcf: $!\n";
-//	VCF: while(my $line=<$fh>) {
-//		chomp $line;
-//
-//		my $VCF_line = vcflines::read_VCF_lines($line);
-//		my $supercontig = $$VCF_line{'supercontig'};
-//		my $position = $$VCF_line{'position'};
-//		my $base_type = $$VCF_line{'base_type0'};
-//
-//		# Ignore ambigious, or contigs of uninterest
-//		next VCF if($$VCF_line{'next'} eq 1);
-//		next VCF if(($exclude !~ m/n/i) && ($supercontig eq $exclude));
-//		next VCF if(($include !~ m/n/i) && ($supercontig ne $include));
-//
-//		# Ignore lines given twice
-//		if(!defined $last_contig_and_position) { $last_contig_and_position = "$supercontig\t$position"; }
-//		else {
-//			my $current_contig_and_position = "$supercontig\t$position";
-//			if($current_contig_and_position eq $last_contig_and_position) {
-//				$last_contig_and_position = $current_contig_and_position;
-//				next VCF;
-//			}
-//			$last_contig_and_position = $current_contig_and_position;
-//		}
-//
-//		# Min depth filtering
-//		if((defined $$VCF_line{'DP0'}) && ($$VCF_line{'DP0'} ne '?'))  {
-//			if($$VCF_line{'DP0'} < $min_depth) {
-//				$min_depth_filtered++;
-//				next VCF;
-//			}
-//		}
-//
-//		# heterozygous sites
-//		if(($settings eq 1) && ($base_type eq 'heterozygous')) {
-//			$other_filtered++;
-//			next VCF;
-//		}
-//		# indels (snp_multi = E.g. ref: ACTCGTCCTGACT consensus: AACTCGTACTGAC)
-//		if(($settings =~ m/[12]/) && ($base_type =~ m/insertion|deletion|snp_multi/)) {
-//			$other_filtered++;
-//			next VCF;
-//		}
-//
-//		# Everything i do want to save
-//		if($base_type !~ m/heterozygous|snp|insertion|deletion|reference/) {
-//			$other_filtered++;
-//			next VCF;
-//		}
-//
-//		# save reference bases
-//		if($base_type =~ m/reference/) {
-//			$ref_count++;
-//			$$genome_hash{$supercontig}[$position] = 1;
-//		} else {
-//			$variant_count++;
-//			$variants_found{$base_type}++;
-//			$$genome_hash{$supercontig}[$position] = 2;
-//		}
-//	}
-//
-//	# summary
-//	warn "Reference bases:\t$ref_count\n";
-//	warn "Variant bases:\t$variant_count\n";
-//	foreach my $type(keys %variants_found) {
-//		my $count = $variants_found{$type};
-//		warn "Variant bases (type=$type)\t$count\n";
-//	}
-//	warn "Excluded for < min depth:\t$min_depth_filtered\n";
-//	warn "Excluded for base type:\t$other_filtered\n";
-//	return $genome_hash;
-//}
+pub fn fill_genome_hash_array_from_vcf(logger: &Logger, entries: &Vec<VCFEntry>, mut genome: HashMap<String, Vec<i32>>, settings: u8) -> HashMap<String, Vec<i32>> {
+    logger.information("make_hashmap_of_arrays_for_genome: filling genome array with vcf entries (1=ref, 2=variant)...");
+
+    let mut refs_in_array = 0;
+    let mut snps_in_array = 0;
+    let mut indels_in_array = 0;
+
+    for entry in entries {
+        let contig = &entry.contig;
+        let position = entry.position;
+
+        // wrongly formatted position in vcf
+        if position == 0 {
+            logger.error(&format!("fill_genome_hash_array_from_vcf: Encountered VCF position 0 (invalid in 1-based VCF format) on contig {}", contig));
+            std::process::exit(1);
+        }
+
+        // convert vcf (1-based coords, to the rust 0-based array
+        let pos = &entry.position - 1; 
+
+        // Check if contig exists in genome
+        let contig_array = match genome.get_mut(contig) {
+            Some(array) => array,
+            None => {
+                logger.warning(&format!("fill_genome_hash_array_from_vcf: Contig '{}' not found in genome array — skipping entry at VCF position {}.", contig, position));
+                continue;
+            }
+        };
+
+        // Check if position is within the length of the contig
+        if pos >= contig_array.len() {
+            logger.error(&format!("fill_genome_hash_array_from_vcf: Position {} (0-based: {}) out of bounds for contig '{}' (length = {}). Skipping.", position, pos, contig, contig_array.len()));
+            std::process::exit(1);
+        }
+
+        for (_sample, base_type) in &entry.samples_to_base_type {
+            let should_write = match settings {
+                1 => base_type == "snp" || base_type == "reference",
+                2 => base_type == "snp" || base_type == "reference" || base_type == "heterozygous",
+                3 => base_type != "ambiguous", // accept everything else
+                _ => {
+                    logger.error(&format!("Invalid settings value: {}", settings));
+                    std::process::exit(1);
+                }
+            };
+
+            if !should_write {
+                continue;
+            }
+
+            let val = if base_type == "reference" {
+                1
+            } else {
+                2
+            };
+
+            // update the genome array
+            if let Some(array) = genome.get_mut(contig) {
+                if pos < array.len() {
+                    array[pos] = val;
+
+                    match base_type.as_str() {
+                        "reference" => refs_in_array += 1,
+                        "snp" | "heterozygous" => snps_in_array += 1,
+                        "insertion" | "het_insertion" | "deletion" | "het_deletion" => indels_in_array += 1,
+                        _ => {}, // do nothing for ambiguous or others
+                    }
+                } else {
+                    logger.warning(&format!("Position {} out of bounds for contig '{}' (length = {})", pos, contig, array.len()));
+                }
+            }
+        }
+    }
+    logger.information(&format!("make_hashmap_of_arrays_for_genome: array changes = reference bases: {}, SNPs: {}, indels: {}", refs_in_array, snps_in_array, indels_in_array));
+    genome
+}
+
+pub fn write_regions_from_genome_array(genome: &HashMap<String, Vec<i32>>, find_value: i32, outfile_path: &str, logger: &Logger) {
+    logger.information(&format!("write_regions_from_genome_array: finding value {}...", find_value));
+
+    let file = File::create(outfile_path).unwrap_or_else(|e| {
+        logger.error(&format!("Could not create file '{}': {}", outfile_path, e));
+        std::process::exit(1);
+    });
+
+    let mut writer = BufWriter::new(file);
+    let mut count_found = 0;
+
+    for (contig, values) in genome {
+        let mut start: Option<usize> = None;
+        let mut printed_header = false;
+        let length = values.len();
+
+        for i in 0..=length {
+            let current = if i < length { values[i] } else { -1 }; // Sentinel: fake value to close run
+
+            if current != find_value {
+                if let Some(start_pos) = start {
+                    let end = i;
+                    count_found += end - start_pos;
+
+                    if !printed_header {
+                        writeln!(writer, "##{}", contig).expect("Failed to write header");
+                        printed_header = true;
+                    }
+
+                    writeln!(writer, "{}\t{}", start_pos, end).expect("Failed to write region");
+                    start = None;
+                }
+            } else {
+                if start.is_none() {
+                    start = Some(i);
+                }
+            }
+        }
+    }
+    logger.information(&format!("write_regions_from_genome_array: found {} positions with value {}", count_found, find_value));
+}
