@@ -12,6 +12,7 @@ mod read_fasta;
 mod read_genome_array_summary;
 mod read_tab;
 mod read_vcf;
+mod utils;
 
 use args::Args;
 use read_vcf::VCFEntry;
@@ -91,6 +92,9 @@ fn main() {
 
     // Generate histogram
     let histogram_positions = read_genome_array_summary::load_or_generate_histogram(&variant_counts, &reference_counts, &vcf_entries_by_sample, name_type_locations.len(), &args, &logger);
+    let settings_str = format!("m-{}-s-{}-e-{}-z-{}", args.min_read_depth, args.settings, args.exclude_contig, args.restrict_contig);
+    let output_prefix = format!("{}/site_coverage_histogram-{}.tsv", args.output_dir, settings_str);
+    utils::run_r_plotting_script(&format!("{}", output_prefix), &output_prefix, &logger, args.percent_for_tree);
 
     // Summarise 
     logger.information("──────────────────────────────");
