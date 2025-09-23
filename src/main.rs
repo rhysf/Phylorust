@@ -3,27 +3,19 @@ use std::fs::{self};
 use std::process;
 use std::path::Path;
 use std::collections::{HashSet, HashMap};
-mod logger;
-use logger::Logger;
-
-// use std::collections::HashSet;
-// use std::ops::Index;
-// use std::collections::HashMap;
 
 mod args;
-mod read_vcf;
-mod read_fasta;
-mod read_tab;
-mod genome_array;
-mod read_genome_array_summary;
 mod fasta_from_sites;
+mod genome_array;
+mod logger;
+mod read_fasta;
+mod read_genome_array_summary;
+mod read_tab;
+mod read_vcf;
 
 use args::Args;
-// use read_genome_array_summary::write_site_position_files;
-// use read_fasta::Fasta;
-// use read_vcf::VCFsamples;
 use read_vcf::VCFEntry;
-// use read_tab::NameTypeLocation;
+use logger::Logger;
 
 fn main() {
 
