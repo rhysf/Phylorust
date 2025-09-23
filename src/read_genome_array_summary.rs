@@ -123,11 +123,7 @@ pub fn summarize_variant_site_coverage(
     num_vcfs: usize, 
     args: &Args, 
     logger: &Logger) -> HashMap<usize, Vec<(String, usize)>> {
-    logger.information(&format!("summarize_variant_site_coverage: Summarizing variant site coverage across {} VCFs...", num_vcfs));
-
-    // Write to TSV file
-    //let settings_str = format!("m-{}-s-{}-e-{}-z-{}", args.min_read_depth, args.settings, args.exclude_contig, args.restrict_contig);
-    //let outfile_path = format!("{}/site_coverage_histogram-{}.tsv", args.output_dir, settings_str);
+    logger.information(&format!("summarize_variant_site_coverage: Flatten contig/pos to global position count across {} VCFs...", num_vcfs));
 
     // Flatten contig/pos to global position count
     let mut position_to_count: HashMap<(String, usize), usize> = HashMap::new();
@@ -142,10 +138,10 @@ pub fn summarize_variant_site_coverage(
         }
     }
 
-    // Count how many invariant-only positions were skipped
-    let mut skipped_invariant_sites = 0;
+    logger.information(&format!("summarize_variant_site_coverage: Compute histogram..."));
 
     // Compute histogram
+    let mut skipped_invariant_sites = 0;
     let mut histogram: Vec<(usize, usize)> = Vec::new(); // (percent, num_sites)
     let mut histogram_positions: HashMap<usize, Vec<(String, usize)>> = HashMap::new();
 
@@ -201,11 +197,6 @@ pub fn summarize_variant_site_coverage(
 }
 
 fn visualize_variant_site_coverage(histogram: &Vec<(usize, usize)>, args: &Args, logger: &Logger) {
-    let settings_str = format!(
-        "m-{}-s-{}-e-{}-z-{}",
-        args.min_read_depth, args.settings, args.exclude_contig, args.restrict_contig
-    );
-    let outfile_path = format!("{}/site_coverage_histogram-{}.tsv", args.output_dir, settings_str);
 
     //logger.output("\nPhylogenetically informative site coverage:");
     //logger.output("Percent_VCFs\tNum_Sites");
@@ -213,13 +204,17 @@ fn visualize_variant_site_coverage(histogram: &Vec<(usize, usize)>, args: &Args,
     //    logger.output(&format!("{}\t{}", percent, count));
     //}
 
-    logger.output("ASCII Plot:");
+    logger.output("visualize_variant_site_coverage: ASCII Plot:");
     let max_val = histogram.first().map(|(_, v)| *v).unwrap_or(1) as f64;
     for (percent, count) in histogram {
         let bar_len = (*count as f64 / max_val * 50.0).round() as usize;
         let bar = "▇".repeat(bar_len);
         logger.output(&format!("{:>3}% | {:>6} | {}", percent, count, bar));
     }
+
+    // outfile
+    let settings_str = format!("m-{}-s-{}-e-{}-z-{}", args.min_read_depth, args.settings, args.exclude_contig, args.restrict_contig);
+    let outfile_path = format!("{}/site_coverage_histogram-{}.tsv", args.output_dir, settings_str);
 
     // Skip writing if file exists
     if Path::new(&outfile_path).exists() {
