@@ -253,7 +253,9 @@ fn visualize_variant_site_coverage(histogram: &Vec<(usize, usize)>, args: &Args,
 
 /// Writes position files for each % threshold (1-100) into a subfolder.
 pub fn write_site_position_files(histogram_positions: &HashMap<usize, Vec<(String, usize)>>, output_dir: &str, logger: &Logger) {
+
     let summary_dir = Path::new(output_dir).join("site_position_files");
+    logger.information("write_site_position_files: summary_dir");
 
     // Avoid re-generating if already exists
     if summary_dir.exists() {

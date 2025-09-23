@@ -89,19 +89,41 @@ fn main() {
     let reference_counts = read_genome_array_summary::load_contig_position_counts(&reference_paths, &logger);
     logger.information("──────────────────────────────");
 
-    // Summarise
+    // Generate histogram
     let histogram_positions = read_genome_array_summary::load_or_generate_histogram(&variant_counts, &reference_counts, &vcf_entries_by_sample, name_type_locations.len(), &args, &logger);
+
+    // Summarise 
+    logger.information("──────────────────────────────");
     read_genome_array_summary::write_site_position_files(&histogram_positions, &args.output_dir, &logger);
-    // let fasta_for_percent = 
-    logger.information(&format!(
-        "vcf_entries_by_sample has {} samples",
-        vcf_entries_by_sample.len()
-    ));
+    logger.information(&format!("vcf_entries_by_sample has {} samples", vcf_entries_by_sample.len()));
 
     for (sample, entries) in &vcf_entries_by_sample {
         logger.information(&format!("Sample: {} has {} entries", sample, entries.len()));
     }
-    fasta_from_sites::generate_fasta_for_percent_site_set(args.percent_for_tree, &histogram_positions, &fasta, &vcf_entries_by_sample, &args, &logger);
+
+    // Determine which percentiles to generate FASTAs for
+    let percentiles_to_generate: Vec<usize> = if args.generate_fastas == "all" {
+        (1..=100).collect()
+    } else if !args.generate_fastas.trim().is_empty() {
+        args.generate_fastas
+            .split(',')
+            .filter_map(|s| s.trim().parse::<usize>().ok())
+            .collect()
+    } else {
+        vec![args.percent_for_tree]
+    };
+
+    // generate FASTA(s)
+    for percent in percentiles_to_generate {
+        fasta_from_sites::generate_fasta_for_percent_site_set(
+            percent,
+            &histogram_positions,
+            &fasta,
+            &vcf_entries_by_sample,
+            &args,
+            &logger,
+        );
+    }
 }
 
 fn generate_output_filenames(args: &Args, logger: &Logger, vcf_path: &str) -> (String, String) {
