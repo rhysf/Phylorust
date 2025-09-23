@@ -313,10 +313,6 @@ fn determine_bases_and_base_type(samples_to_genotype: &HashMap<String, String>, 
 
 fn determine_bases_and_base_type_single_sample(genotype: &String, ref_base : &String, alt_base : &String, logger : &Logger) -> (String, String, String) {
 
-    let mut base1 = "N".to_string();
-    let mut base2 = "None".to_string();
-    let mut base_type = "ambiguous".to_string();
-
     // Save bases and GT parts
     let consensus_bases : Vec<&str> = alt_base.split(',').collect();
     let mut all_bases = vec![ref_base.as_str()];
@@ -327,33 +323,26 @@ fn determine_bases_and_base_type_single_sample(genotype: &String, ref_base : &St
     let gt_parts : Vec<&str> = genotype.split(|c| c == '/' || c == '|').collect();
     let mut gt_bases : Vec<&str> = Vec::new();
     for gt_part in gt_parts.iter() {
-        let mut index = 0;
 
-        // Ambiguous GT (all things non numerical such as . or *)
-        match gt_part.parse::<usize>() {
-            Ok(n) => {
-                index = n;
-            },
-            Err(_e) => {
-                base1 = "N".to_string();
-                base_type = "ambiguous".to_string();
-                return (base1, base2, base_type);
+        // Try to parse genotype index
+        let n = match gt_part.parse::<usize>() {
+            Ok(n) => n,
+            Err(_) => {
+                return ("N".to_string(), "None".to_string(), "ambiguous".to_string());
             }
-        }
+        };
 
-        // No base defined
-        if(all_bases.len()-1) < index {
-            logger.error(&format!("vcf parsing genotype error: No {} defined from ref {} and cons {}", index, ref_base, alt_base));
+        // Validate index range
+        if all_bases.len() <= n {
+            logger.error(&format!("vcf parsing genotype error: No {} defined from ref {} and cons {}", n, ref_base, alt_base));
             process::exit(1);
         }
 
-        let gt_base = all_bases[index];
+        let gt_base = all_bases[n];
 
         // Ambiguous bases
         if(gt_base == "N") || (gt_base == ".") || (gt_base == "*") {
-            base1 = "N".to_string();
-            base_type = "ambiguous".to_string();
-            return (base1, base2, base_type);
+            return ("N".to_string(), "None".to_string(), "ambiguous".to_string());
         }
 
         // save the bases
@@ -362,9 +351,7 @@ fn determine_bases_and_base_type_single_sample(genotype: &String, ref_base : &St
 
 	// Homozygous ref-calls
     if genotype == "0" {
-        base1 = ref_base.to_string();
-	    base_type = "reference".to_string();
-	 	return (base1, base2, base_type);
+        return (ref_base.to_string(), String::new(), "reference".to_string());
     }
 
 	// Homozygous non-reference
@@ -376,15 +363,13 @@ fn determine_bases_and_base_type_single_sample(genotype: &String, ref_base : &St
 
             // Simple Homozygous SNP
             if get_base.len() == 1 {
-                base1 = get_base.to_string();
-	 			base_type = "snp".to_string();
-	 			return (base1, base2, base_type);
+                return (get_base.to_string(), String::new(), "snp".to_string());
             }
 
             // SNP(s) disguised as an indel
             let mut snp_count = 0;
-            let mut ref_base_saved = "".to_string();
-            let mut cons_base_saved = "".to_string();
+            let mut ref_base_saved = String::new();
+            let mut cons_base_saved = String::new();
             for(index, consensus_base_char) in get_base.chars().enumerate() {
                 let ref_base_char = ref_base.chars().nth(index).unwrap();
                 if ref_base_char != consensus_base_char {
@@ -395,45 +380,54 @@ fn determine_bases_and_base_type_single_sample(genotype: &String, ref_base : &St
             }
 
             return match snp_count{
-                0 => {
-                    base1 = ref_base.to_string();
-	 			    base_type = "reference".to_string();
-	 			    (base1, base2, base_type)
-                }
-                1 => {
-                    base1 = ref_base_saved;
-				    base2 = cons_base_saved;
-				    base_type = "snp".to_string();
-				    (base1, base2, base_type)
-                }
-                _ => {
-                    base1 = get_base.to_string();
-	 			    base_type = format!("snp_multi_{}", snp_count);
-	 			    (base1, base2, base_type)
-                }
+                0 => (
+                    ref_base.to_string(),
+                    String::new(),
+                    "reference".to_string(),
+                ),
+                1 => (
+                    ref_base_saved,
+                    cons_base_saved,
+                    "snp".to_string(),
+                ),
+                _ => (
+                    get_base.to_string(),
+                    String::new(),
+                    format!("snp_multi_{}", snp_count),
+                ),
             };
         }
 
-        // Homozygous indel
-        base1 = get_base.to_string();
-        // Deletion
+        // Homozygous Deletion
         if ref_base.len() > get_base.len() {
-	 		base_type = "deletion".to_string();
-	 		return (base1, base2, base_type);
+	 		return (
+                get_base.to_string(),
+                String::new(),
+                "deletion".to_string(),
+            );
         }
-        // Insertion
-	 	base_type = "insertion".to_string();
-	 	return (base1, base2, base_type);
+        // Homozygous Insertion
+	 	return (
+            get_base.to_string(),
+            String::new(),
+            "insertion".to_string(),
+        );
     }
 
 	// Bi-allelic heterozygous positions & indels
     if gt_bases.len() == 2 {
         let base1 = gt_bases[0].to_string();
         let base2 = gt_bases[1].to_string();
-        base_type = "heterozygous".to_string();
-        if base1.len() < base2.len() { base_type = "het_insertion".to_string(); }
-        if base1.len() > base2.len() { base_type = "het_deletion".to_string(); }
-        return (base1, base2, base_type);
+        
+        let base_type = if base1.len() < base2.len() {
+            "het_insertion"
+        } else if base1.len() > base2.len() {
+            "het_deletion"
+        } else {
+            "heterozygous"
+        };
+
+        return (base1, base2, base_type.to_string());
     }
 
     // polyploid?

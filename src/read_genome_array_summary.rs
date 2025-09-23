@@ -6,6 +6,7 @@ use std::fs::File;
 use std::io::{BufRead, BufReader, Write, BufWriter};
 use crate::args::Args;
 use crate::read_vcf::VCFEntry;
+use rayon::prelude::*;
 
 pub fn load_contig_position_counts(file_paths: &[String], logger: &Logger) -> HashMap<String, HashMap<usize, usize>> {
     let mut contig_position_counts: HashMap<String, HashMap<usize, usize>> = HashMap::new();
@@ -59,7 +60,7 @@ pub fn load_contig_position_counts(file_paths: &[String], logger: &Logger) -> Ha
 }
 
 /// Builds sample_bases: sample_name → (contig, pos) → base
-pub fn build_sample_bases(vcf_entries_by_sample: &HashMap<String, Vec<VCFEntry>>, logger: &Logger) -> HashMap<String, HashMap<(String, usize), char>> {
+pub fn build_sample_bases(vcf_entries_by_sample: &HashMap<String, Vec<VCFEntry>>) -> HashMap<String, HashMap<(String, usize), char>> {
     let mut sample_bases: HashMap<String, HashMap<(String, usize), char>> = HashMap::new();
 
     for (sample, entries) in vcf_entries_by_sample {
@@ -103,7 +104,7 @@ pub fn load_or_generate_histogram(
         return histogram_positions;
     }
 
-    let sample_bases = build_sample_bases(vcf_entries_by_sample, logger);
+    let sample_bases = build_sample_bases(vcf_entries_by_sample);
 
     // Else: fallback to real calculation
     summarize_variant_site_coverage(
@@ -138,49 +139,64 @@ pub fn summarize_variant_site_coverage(
         }
     }
 
+    // Phase 1: Build site_to_bases (aggregate base observations across all samples)
+    logger.information(&format!("summarize_variant_site_coverage: Build site to bases aggregate across all samples..."));
+    let mut site_to_bases: HashMap<(String, usize), HashSet<char>> = HashMap::new();
+
+    for (_, base_map) in sample_bases {
+        for (&(ref contig, pos), &base) in base_map {
+            site_to_bases
+                .entry((contig.clone(), pos))
+                .or_default()
+                .insert(base);
+        }
+    }
+
+    // Phase 2: Compute histogram over informative sites only
     logger.information(&format!("summarize_variant_site_coverage: Compute histogram..."));
+    let results: Vec<(usize, usize, Vec<(String, usize)>, usize)> = (1u32..=100)
+        .rev()
+        .collect::<Vec<_>>()
+        .into_par_iter()
+        .map(|percent_u32| {
+            let percent = percent_u32 as usize;
+            let threshold = ((percent as f64 / 100.0) * num_vcfs as f64).ceil() as usize;
+            let mut count = 0;
+            let mut sites = Vec::new();
+            let mut skipped = 0;
 
-    // Compute histogram
-    let mut skipped_invariant_sites = 0;
-    let mut histogram: Vec<(usize, usize)> = Vec::new(); // (percent, num_sites)
-    let mut histogram_positions: HashMap<usize, Vec<(String, usize)>> = HashMap::new();
+            for (&(ref contig, pos), &total_count) in position_to_count.iter() {
+                if total_count < threshold {
+                    continue;
+                }
 
-    for percent in (1..=100).rev() {
-        let threshold = ((percent as f64 / 100.0) * num_vcfs as f64).ceil() as usize;
-        let mut count = 0;
-
-        for (&(ref contig, pos), &total_count) in &position_to_count {
-            if total_count < threshold {
-                continue;
-            }
-
-            // Collect bases at this site across all samples
-            let mut base_set = HashSet::new();
-            for sample in sample_bases.keys() {
-                if let Some(base_map) = sample_bases.get(sample) {
-                    if let Some(base) = base_map.get(&(contig.clone(), pos)) {
-                        base_set.insert(*base);
+                if let Some(bases) = site_to_bases.get(&(contig.clone(), pos)) {
+                    if bases.len() > 1 {
+                        count += 1;
+                        sites.push((contig.clone(), pos));
+                    } else if percent == 100 {
+                        skipped += 1;
                     }
                 }
             }
 
-            // Only include if there's variation across samples
-            if base_set.len() <= 1 {
-                if percent == 100 {
-                    skipped_invariant_sites += 1;
-                }
-                continue;
-            }
+            (percent, count, sites, skipped)
+        })
+        .collect();
 
-            count += 1;
-            histogram_positions
-                .entry(percent)
-                .or_default()
-                .push((contig.clone(), pos));
-        }
+    let mut histogram: Vec<(usize, usize)> = Vec::new();
+    let mut histogram_positions: HashMap<usize, Vec<(String, usize)>> = HashMap::new();
+    let mut skipped_invariant_sites = 0;
 
+    for (percent, count, positions, skipped) in results {
         histogram.push((percent, count));
+        histogram_positions.insert(percent, positions);
+
+        if percent == 100 {
+            skipped_invariant_sites = skipped;
+        }
     }
+
 
     // Visualise
     visualize_variant_site_coverage(&histogram, args, logger);
