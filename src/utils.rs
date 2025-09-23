@@ -63,12 +63,12 @@ dot_y <- data %>%
 # Add padding so the dot is slightly above the bar
 dot_y_pos <- dot_y + y_max * 0.02
 
-# Main plot
+# Main plot (, color = "white", width = 0.9 to geom_col
 p <- ggplot(data, aes(x = Percent_VCFs, y = Num_Sites)) +
   geom_col(fill = "steelblue") +
   scale_x_continuous(
     breaks = seq(0, 100, by = 10),
-    expand = c(0, 100)
+    expand = c(0, 0.5)
   ) +
   scale_y_continuous(
     limits = c(0, y_limit),
@@ -93,8 +93,8 @@ if (length(dot_y) == 1 && !is.na(dot_y)) {
 }
 
 # Save plots
-ggsave(paste0(output_prefix, ".png"), p, width = 10, height = 6, dpi = 300)
-ggsave(paste0(output_prefix, ".pdf"), p, width = 10, height = 6)
+ggsave(paste0(output_prefix, ".png"), p, width = 8, height = 8, dpi = 300)
+ggsave(paste0(output_prefix, ".pdf"), p, width = 8, height = 8)
 
 message("Saved plots to: ", output_prefix, ".png and .pdf")
 "#;
