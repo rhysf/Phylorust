@@ -57,7 +57,7 @@ fn main() {
         variant_paths.push(outfile_variant_bases.clone());
 
         // Read VCF
-        let entries = read_vcf::read_vcf(name_type_location, &logger, &mut global_sample_names);
+        let entries = read_vcf::read_vcf(name_type_location, &logger, &mut global_sample_names, &args);
         logger.information(&format!("{}: {} vcf positions parsed", name_type_location.location, entries.len()));
         read_vcf::count_variants(&entries, &logger);
 

@@ -1,5 +1,6 @@
 use crate::logger::Logger;
 use crate::read_tab::NameTypeLocation;
+use crate::args::Args;
 use std::fs::{self};
 use std::process;
 use std::collections::{HashMap, HashSet};
@@ -27,7 +28,10 @@ pub struct VCFEntry {
     pub samples_to_base_type:HashMap<String, String>,
 }
 
-pub fn read_vcf(name_type_location : &NameTypeLocation, logger : &Logger, global_sample_names: &mut HashSet<String>) -> Vec<VCFEntry> {
+pub fn read_vcf(name_type_location : &NameTypeLocation, 
+    logger : &Logger, 
+    global_sample_names: &mut HashSet<String>, 
+    args: &Args) -> Vec<VCFEntry> {
     logger.information(&format!("read VCF: {}", name_type_location.location));
 
     // read file
@@ -96,13 +100,14 @@ pub fn read_vcf(name_type_location : &NameTypeLocation, logger : &Logger, global
             }
         };
         
-        let vcfentry = read_vcf_line(line, logger, vcf_samples_ref);
-        vcf_entries.push(vcfentry);
+        if let Some(entry) = read_vcf_line(line, &args, logger, vcf_samples_ref) {
+            vcf_entries.push(entry);
+        }
     }
     vcf_entries
 }
 
-fn read_vcf_line(line : &str, logger : &Logger, samples: &VCFsamples) -> VCFEntry {
+fn read_vcf_line(line : &str, args: &Args, logger : &Logger, samples: &VCFsamples) -> Option<VCFEntry> {
 
     let line_parts : Vec<&str> = line.split('\t').collect();
     let contig = line_parts[0].to_string();
@@ -125,18 +130,40 @@ fn read_vcf_line(line : &str, logger : &Logger, samples: &VCFsamples) -> VCFEntr
         process::exit(1);
     }
 
+    // Ignore contig
+    if args.exclude_contig != "n" && contig == args.exclude_contig {
+        return None;
+    }
+    // Restrict to contig
+    if args.restrict_contig != "n" && contig != args.restrict_contig {
+        return None;
+    }
+
     // get sample info
     let sample_names = samples.samples.clone();
 
-    // get genotype
-    let gt_position = read_genotype_position(line_parts[8], logger);
-    let samples_to_genotype = create_sample_to_genotype(&line_parts[9..], gt_position, &samples.samples);
+    // get genotype and depth
+    let (gt_index, md_index_opt) = read_genotype_and_depth_positions(line_parts[8], logger);
+    let mut samples_to_genotype = create_sample_to_genotype(&line_parts[9..], gt_index, &samples.samples);
+    let sample_to_depth = create_sample_to_depth(&line_parts[9..], md_index_opt, &samples.samples, args.min_read_depth);
 
     // Determine what base it is
-    let (samples_to_base1, samples_to_base2, samples_to_base_type) = determine_bases_and_base_type(&samples_to_genotype, &ref_base, &alt_base, &logger);
+    let (mut samples_to_base1, mut samples_to_base2, mut samples_to_base_type) = determine_bases_and_base_type(&samples_to_genotype, &ref_base, &alt_base, &logger);
+
+    // Filter by min depth
+    let proceed = filter_samples_by_min_depth(
+        args.min_read_depth as usize,
+        &sample_to_depth,
+        &mut samples_to_genotype,
+        &mut samples_to_base1,
+        &mut samples_to_base2,
+        &mut samples_to_base_type);
+    if !proceed {
+        return None;
+    }
 
     // return various info for vcf entry
-    VCFEntry{
+    Some(VCFEntry{
         contig,
         position,
         id,
@@ -151,46 +178,121 @@ fn read_vcf_line(line : &str, logger : &Logger, samples: &VCFsamples) -> VCFEntr
         samples_to_base1,
         samples_to_base2,
         samples_to_base_type,
-    }
+    })
 }
 
-fn read_genotype_position(format : &str, logger : &Logger) -> usize {
-    if format.starts_with("GT") {
-        return 0;
-    }
+fn read_genotype_and_depth_positions(format : &str, logger : &Logger) -> (usize, Option<usize>) {
     
-    let format_string = format.to_string();
-    let format_parts : Vec<&str> = format_string.split(':').collect();
+    let format_parts : Vec<&str> = format.split(':').collect();
 
-    for(index, format_part) in format_parts.iter().enumerate() {
-        if format_part.to_string().to_uppercase() == "GT" {
-            return index;
+    let mut gt_index: Option<usize> = None;
+    let mut dp_index: Option<usize> = None;
+
+    for(index, key) in format_parts.iter().enumerate() {
+        let key_upper = key.to_uppercase();
+        if key_upper == "GT" {
+            gt_index = Some(index);
+        } else if key_upper == "DP" {
+            dp_index = Some(index); 
         }
     }
 
-    logger.error(&format!("Error with vcf line (no genotype found): {}", format));
-    process::exit(1);
+    if let Some(gt_idx) = gt_index {
+        (gt_idx, dp_index)
+    } else {
+        logger.error(&format!("Error with vcf line (no genotype found): {}", format));
+        process::exit(1);
+    }
 }
 
 fn create_sample_to_genotype(samples : &[&str], gt_pos : usize, sample_names : &HashMap<usize, String>) -> HashMap<String, String> {
 
-    let mut sample_to_genotype = HashMap::new();
+    let mut sample_to_genotype = HashMap::with_capacity(samples.len());
 
-    for(index, sample) in samples.iter().enumerate() {
-        let sample_parts : Vec<&str> = sample.split(':').collect();
+    for(index, sample_field) in samples.iter().enumerate() {
+        let sample_parts: Vec<&str> = sample_field.split(':').collect();
+        if gt_pos >= sample_parts.len() {
+            continue; // or handle this gracefully
+        }
+
         let sample_name = &sample_names[&index];
-        let genotype = match sample_parts[gt_pos] {
-            "0/0" => "0",
-            "1/1" => "1",
-            "0|0" => "0",
-            "1|1" => "1",
-            _ => sample_parts[gt_pos]
+        let raw_gt = sample_parts[gt_pos];
+        let processed_gt = match raw_gt {
+            "0/0" | "0|0" => "0",
+            "1/1" | "1|1" => "1",
+            _ => raw_gt
         };
 
-        sample_to_genotype.insert(sample_name.to_string(), genotype.to_string());
+        sample_to_genotype.insert(sample_name.clone(), processed_gt.to_string());
+    }
+    sample_to_genotype
+}
+
+fn create_sample_to_depth(
+    samples: &[&str],
+    md_pos_opt: Option<usize>,
+    sample_names: &HashMap<usize, String>,
+    min_read_depth: u8,
+) -> HashMap<String, usize> {
+
+    // return empty
+    if min_read_depth == 0 || md_pos_opt.is_none() {
+        return HashMap::new();
+    }   
+
+    let mut sample_to_depth = HashMap::with_capacity(samples.len());
+
+    if let Some(md_pos) = md_pos_opt {
+        for (index, sample_field) in samples.iter().enumerate() {
+            let sample_parts: Vec<&str> = sample_field.split(':').collect();
+            if md_pos >= sample_parts.len() {
+                continue; // skip invalid
+            }
+
+            if let Ok(depth_val) = sample_parts[md_pos].parse::<usize>() {
+                let sample_name = &sample_names[&index];
+                sample_to_depth.insert(sample_name.clone(), depth_val);
+            }
+        }
+    }
+    sample_to_depth
+}
+
+fn filter_samples_by_min_depth(
+        min_depth: usize,
+        sample_to_depth: &HashMap<String, usize>,
+        samples_to_genotype: &mut HashMap<String, String>,
+        samples_to_base1: &mut HashMap<String, String>,
+        samples_to_base2: &mut HashMap<String, String>,
+        samples_to_base_type: &mut HashMap<String, String>,
+    ) -> bool {
+
+    // Retain only samples that are either:
+    // - Not in depth map (missing MD) => KEEP
+    // - In depth map and >= min_depth => KEEP
+    let valid_samples: HashSet<String> = samples_to_genotype
+        .keys()
+        .filter(|sample| {
+            match sample_to_depth.get(*sample) {
+                Some(&depth) => depth >= min_depth,
+                None => true, // no depth info = assume valid
+            }
+        })
+        .cloned()
+        .collect();
+
+    // If all samples are filtered, return false
+    if valid_samples.is_empty() {
+        return false;
     }
 
-    sample_to_genotype
+    // Retain only valid samples
+    samples_to_genotype.retain(|k, _| valid_samples.contains(k));
+    samples_to_base1.retain(|k, _| valid_samples.contains(k));
+    samples_to_base2.retain(|k, _| valid_samples.contains(k));
+    samples_to_base_type.retain(|k, _| valid_samples.contains(k));
+
+    true
 }
 
 fn determine_bases_and_base_type(samples_to_genotype: &HashMap<String, String>, ref_base : &String, alt_base : &String, logger : &Logger) -> (HashMap<String, String>, HashMap<String, String>, HashMap<String, String>) {
