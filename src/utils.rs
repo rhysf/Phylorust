@@ -67,8 +67,8 @@ dot_y_pos <- dot_y + y_max * 0.02
 p <- ggplot(data, aes(x = Percent_VCFs, y = Num_Sites)) +
   geom_col(fill = "steelblue") +
   scale_x_continuous(
-    limits = c(0, 100),
-    breaks = seq(0, 100, by = 10)
+    breaks = seq(0, 100, by = 10),
+    expand = c(0, 100)
   ) +
   scale_y_continuous(
     limits = c(0, y_limit),
