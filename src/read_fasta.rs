@@ -4,7 +4,7 @@ use std::process;
 
 pub struct Fasta {
     pub id:String,
-    pub desc:String,
+    //pub desc:String,
     pub seq:String,
 }
 
@@ -19,7 +19,7 @@ pub fn read_fasta(file : String, logger : &Logger) -> Vec<Fasta> {
 
     // separate out the columns
     let mut last_id = "";
-    let mut last_desc = "";
+    //let mut last_desc = "";
     let mut last_sequence = String::from("");
     let mut fasta: Vec<Fasta> = Vec::new();
     for line in fasta_file.lines() {
@@ -27,18 +27,19 @@ pub fn read_fasta(file : String, logger : &Logger) -> Vec<Fasta> {
         // ID and Description
         if line.starts_with(">") {
             if last_id != "" {
-                fasta.push(Fasta { id: last_id.to_string(), desc: last_desc.to_string(), seq: last_sequence });
+                //fasta.push(Fasta { id: last_id.to_string(), desc: last_desc.to_string(), seq: last_sequence });
+                fasta.push(Fasta { id: last_id.to_string(), seq: last_sequence });
             }
             last_sequence = String::from("");
 
             match line.find(" ") {
                 Some(index) => {
                     last_id = &line[1..index];
-                    last_desc = &line[index+1..];
+                    //last_desc = &line[index+1..];
                 },
                 None => { 
                     last_id = &line[1..];
-                    last_desc = "";
+                    //last_desc = "";
                 }
             };
             //println!("id and desc: {} {}", last_id, last_desc);
@@ -47,7 +48,8 @@ pub fn read_fasta(file : String, logger : &Logger) -> Vec<Fasta> {
             last_sequence.push_str(line);
         }
     }
-    fasta.push(Fasta { id: last_id.to_string(), desc: last_desc.to_string(), seq: last_sequence }); 
+    //fasta.push(Fasta { id: last_id.to_string(), desc: last_desc.to_string(), seq: last_sequence }); 
+    fasta.push(Fasta { id: last_id.to_string(), seq: last_sequence }); 
     logger.information("read_fasta: Finished processing file");
 
     return fasta;

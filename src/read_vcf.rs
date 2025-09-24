@@ -6,7 +6,7 @@ use std::process;
 use std::collections::{HashMap, HashSet};
 
 pub struct VCFsamples {
-    header:String,
+    //header:String,
     samples:HashMap<usize, String>,
 }
 
@@ -85,7 +85,7 @@ pub fn read_vcf(name_type_location : &NameTypeLocation,
             }
 
             vcf_samples = Some(VCFsamples{
-                header:line.to_string(),
+                //header:line.to_string(),
                 samples:sample_names,
             });
             continue; 
@@ -116,13 +116,13 @@ fn read_vcf_line(line : &str, args: &Args, logger : &Logger, samples: &VCFsample
         process::exit(1);
     });
     //let position = line_parts[1];
-    let id = line_parts[2].to_string();
+    //let id = line_parts[2].to_string();
     let ref_base = line_parts[3].to_string();
     let alt_base = line_parts[4].to_string();
-    let cons_qual = line_parts[5].to_string();
-    let filter = line_parts[6].to_string();
-    let info = line_parts[7].to_string();
-    let format = line_parts[8].to_string();
+    //let cons_qual = line_parts[5].to_string();
+    //let filter = line_parts[6].to_string();
+    //let info = line_parts[7].to_string();
+    //let format = line_parts[8].to_string();
 
     // Initial quality check
     if line_parts.len() < 9 {
@@ -140,7 +140,7 @@ fn read_vcf_line(line : &str, args: &Args, logger : &Logger, samples: &VCFsample
     }
 
     // get sample info
-    let sample_names = samples.samples.clone();
+    //let sample_names = samples.samples.clone();
 
     // get genotype and depth
     let (gt_index, md_index_opt) = read_genotype_and_depth_positions(line_parts[8], logger);

@@ -1,7 +1,6 @@
 use crate::logger::Logger;
 use std::fs::write;
 use std::process::Command;
-use std::path::Path;
 
 pub fn check_r_installed() -> bool {
     Command::new("Rscript")
@@ -10,11 +9,13 @@ pub fn check_r_installed() -> bool {
         .is_ok()
 }
 
-pub fn run_r_plotting_script(histogram_file: &str, output_prefix: &str, logger: &Logger, percent_for_tree: usize) {
+pub fn run_r_plotting_script(histogram_file: &str, logger: &Logger, percent_for_tree: usize, output_dir: &str) {
     if !check_r_installed() {
-        logger.warning("Rscript not found. Skipping graphical histogram generation.");
+        logger.warning("run_r_plotting_script: R not found. Skipping graphical histogram generation.");
         return;
     }
+
+    logger.information("run_r_plotting_script: Writing Rscript...");
 
     let r_script = r#"
 #!/usr/bin/env Rscript
@@ -50,45 +51,84 @@ data <- data %>%
     Percent_VCFs <= 100
   )
 
+# Aggregate into 10% bins with numeric midpoints
+bin_breaks <- seq(0, 100, 10)
+
+data <- data %>%
+  mutate(
+    BinIndex = cut(Percent_VCFs,
+                   breaks = bin_breaks,
+                   include.lowest = TRUE,
+                   labels = FALSE)
+  ) %>%
+  group_by(BinIndex) %>%
+  summarise(
+    Num_Sites = mean(Num_Sites),
+    BinMid = mean(Percent_VCFs),   # midpoint from actual values
+    .groups = "drop"
+  )
+
 # Compute Y-axis padding
 y_max <- max(data$Num_Sites, na.rm = TRUE)
-y_pad <- round(y_max * 0.05)
+y_pad <- ceiling(y_max * 0.1)
 y_limit <- y_max + y_pad
 
 # Get y value for red dot, if available
-dot_y <- data %>%
-  filter(Percent_VCFs == selected_percent) %>%
-  pull(Num_Sites)
-
-# Add padding so the dot is slightly above the bar
-dot_y_pos <- dot_y + y_max * 0.02
+bin_for_dot <- as.character(cut(
+  selected_percent,
+  breaks = seq(0, 100, 5),
+  include.lowest = TRUE
+))
 
 # Main plot (, color = "white", width = 0.9 to geom_col
-p <- ggplot(data, aes(x = Percent_VCFs, y = Num_Sites)) +
-  geom_col(fill = "steelblue") +
+p <- ggplot(data, aes(x = BinMid, y = Num_Sites)) +
+  geom_col(fill = "steelblue", color = "white", width = 8) +
   scale_x_continuous(
-    breaks = seq(0, 100, by = 10),
-    expand = c(0, 0.5)
-  ) +
-  scale_y_continuous(
-    limits = c(0, y_limit),
-    expand = c(0, 0)
-  ) +
-  labs(
-    title = "Phylogenetically informative sites",
-    x = "Percent of VCFs",
-    y = "Number of Sites"
+    breaks = seq(0, 100, 10),
+    limits = c(0, 100),
+    expand = c(0, 5)
   ) +
   theme_minimal(base_size = 16) +
   theme(
-    plot.title = element_text(hjust = 0.5, size = 20, face = "bold"),
-    axis.title = element_text(size = 18),
-    axis.text = element_text(size = 14),
+    plot.title = element_text(hjust = 0.5, size = 24, face = "bold"),
+    axis.title = element_text(size = 20),
+    axis.text = element_text(size = 20),
     axis.text.x = element_text(angle = 0)
   )
 
+# Switch to “thousands” view
+if (y_max > 10000) {
+  # scale values to thousands
+  p <- p + scale_y_continuous(
+    limits = c(0, y_limit),
+    expand = c(0, 0),
+    labels = function(x) x / 1000
+  )
+  y_label <- "Number of sites (thousands)"
+} else {
+  p <- p + scale_y_continuous(
+    limits = c(0, y_limit),
+    expand = c(0, 0)
+  )
+  y_label <- "Number of sites"
+}
+
+# Add labels (after y_label is set)
+p <- p + labs(
+  title = "Phylogenetically informative sites",
+  x = "Percent of VCFs (10% bins)",
+  y = y_label
+)
+
 # Add the red dot above the corresponding bar (if found)
+dot_y <- data %>%
+  filter(BinMid <= selected_percent & selected_percent < BinMid + 10) %>%
+  pull(Num_Sites)
+
 if (length(dot_y) == 1 && !is.na(dot_y)) {
+  # Add padding so the dot is slightly above the bar
+  dot_y_pos <- dot_y + y_max * 0.02
+
   p <- p + annotate("point", x = selected_percent, y = dot_y_pos, color = "red", size = 3)
 }
 
@@ -99,8 +139,8 @@ ggsave(paste0(output_prefix, ".pdf"), p, width = 8, height = 8)
 message("Saved plots to: ", output_prefix, ".png and .pdf")
 "#;
 
-    let script_path = "plot_histogram.R";
-    if let Err(e) = write(script_path, r_script) {
+    let script_path = format!("{}/plot_histogram.R", output_dir);
+    if let Err(e) = write(&script_path, r_script) {
         logger.error(&format!("Failed to write R script: {}", e));
         return;
     }

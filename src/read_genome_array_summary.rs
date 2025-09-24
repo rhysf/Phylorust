@@ -197,7 +197,6 @@ pub fn summarize_variant_site_coverage(
         }
     }
 
-
     // Visualise
     visualize_variant_site_coverage(&histogram, args, logger);
 
@@ -223,9 +222,12 @@ fn visualize_variant_site_coverage(histogram: &Vec<(usize, usize)>, args: &Args,
     logger.output("visualize_variant_site_coverage: ASCII Plot:");
     let max_val = histogram.first().map(|(_, v)| *v).unwrap_or(1) as f64;
     for (percent, count) in histogram {
-        let bar_len = (*count as f64 / max_val * 50.0).round() as usize;
-        let bar = "▇".repeat(bar_len);
-        logger.output(&format!("{:>3}% | {:>6} | {}", percent, count, bar));
+        // Show 100%, 1%, and every 10% step
+        if *percent == 100 || *percent == 1 || percent % 10 == 0 {
+            let bar_len = (*count as f64 / max_val * 50.0).round() as usize;
+            let bar = "▇".repeat(bar_len);
+            logger.output(&format!("{:>3}% | {:>6} | {}", percent, count, bar));
+        }
     }
 
     // outfile

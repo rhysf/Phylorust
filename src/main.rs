@@ -26,6 +26,13 @@ fn main() {
     // Read Name Type Location file
     let name_type_locations = read_tab::read_name_type_location_file(&args.name_type_location_filename, &logger);
 
+    // Make VCF path → tab file sample name
+    let mut rename_map: HashMap<String, String> = HashMap::new();
+    for nt in &name_type_locations {
+        // Keyed by the file path from the tab file
+        rename_map.insert(nt.location.clone(), nt.name.clone());
+    }
+
     // Read FASTA file to memory
     let fasta = read_fasta::read_fasta(args.fasta_filename.clone(), &logger);
 
@@ -57,9 +64,16 @@ fn main() {
         // Group VCF entries by sample
         for entry in &entries {
             for sample_name in entry.samples_to_base_type.keys().cloned() {
+                // Check if this VCF file has a rename entry
+                let final_name = if let Some(rename) = rename_map.get(&name_type_location.location) {
+                    rename.clone()
+                } else {
+                    sample_name.clone()
+                };
+
                 //logger.information(&format!("Assigning entry to sample: {}", sample_name));
                 vcf_entries_by_sample
-                    .entry(sample_name)
+                    .entry(final_name)
                     .or_default()
                     .push(entry.clone());
             }
@@ -93,8 +107,8 @@ fn main() {
     // Generate histogram
     let histogram_positions = read_genome_array_summary::load_or_generate_histogram(&variant_counts, &reference_counts, &vcf_entries_by_sample, name_type_locations.len(), &args, &logger);
     let settings_str = format!("m-{}-s-{}-e-{}-z-{}", args.min_read_depth, args.settings, args.exclude_contig, args.restrict_contig);
-    let output_prefix = format!("{}/site_coverage_histogram-{}.tsv", args.output_dir, settings_str);
-    utils::run_r_plotting_script(&format!("{}", output_prefix), &output_prefix, &logger, args.percent_for_tree);
+    let histogram_file = format!("{}/site_coverage_histogram-{}.tsv", args.output_dir, settings_str);
+    utils::run_r_plotting_script(&histogram_file, &logger, args.percent_for_tree, &args.output_dir);
 
     // Summarise 
     logger.information("──────────────────────────────");
