@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="images/logo.png" alt="Phylorust Logo" width="400"/>
+</p>
+
 # Phylorust
 
 **Phylorust** is a Rust-based command-line tool to generate phylogenetically informative SNP site sets (as FASTA files) and associated Tree's from VCF file(s) and FASTA reference genome files.  
