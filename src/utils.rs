@@ -1,12 +1,147 @@
 use crate::logger::Logger;
 use std::fs::write;
-use std::process::Command;
+use std::fs::File;
+use std::path::Path;
+use std::process::{Command, Stdio};
+use which::which;
+
 
 pub fn check_r_installed() -> bool {
     Command::new("Rscript")
         .arg("--version")
         .output()
         .is_ok()
+}
+
+/// Run FastTree on a set of FASTA files (one per percent threshold).
+///
+/// - `output_dir`: where FASTAs and trees live
+/// - `percents`: list of percent thresholds (e.g., [90, 95, 100])
+/// - `logger`: logging utility
+/// - `fasttree_bin`: optional path to FastTree binary. If `None`, will search PATH.
+pub fn run_fasttree_on_fastas(
+    output_dir: &str,
+    percents: &[usize],
+    logger: &Logger,
+    fasttree_bin: Option<&str>,
+) {
+    // Decide which binary to use
+    let fasttree_exe = if let Some(path) = fasttree_bin {
+        Path::new(path).to_path_buf()
+    } else if let Ok(path) = which("FastTree") {
+        path
+    } else {
+        logger.warning(
+            "FastTree not found (neither in PATH nor provided with --fasttree-bin). Skipping tree generation.",
+        );
+        return;
+    };
+
+    logger.information(&format!("Using FastTree binary: {}", fasttree_exe.display()));
+
+    for percent in percents {
+        let fasta_file = format!("{}/percent_{}.fasta", output_dir, percent);
+        let tree_file = format!("{}/percent_{}-FastTree.tree", output_dir, percent);
+
+        if !Path::new(&fasta_file).exists() {
+            logger.warning(&format!(
+                "FASTA file not found for {}%: {}",
+                percent, fasta_file
+            ));
+            continue;
+        }
+
+        logger.information(&format!("Running FastTree on {}", fasta_file));
+
+        let tree_out = match File::create(&tree_file) {
+            Ok(f) => f,
+            Err(e) => {
+                logger.error(&format!("Failed to create tree output file: {}", e));
+                continue;
+            }
+        };
+
+        match Command::new(&fasttree_exe)
+            .arg("-nt")
+            .arg(&fasta_file)
+            .stdout(Stdio::from(tree_out))
+            .status()
+        {
+            Ok(s) if s.success() => {
+                logger.information(&format!("Tree written to {}", tree_file));
+
+                // Read Newick and pretty-print ASCII tree
+                match std::fs::read_to_string(&tree_file) {
+                    Ok(newick) => {
+                        logger.information(&format!("ASCII tree for {}%:", percent));
+                        crate::utils::print_newick_tree(&newick, logger);
+                    }
+                    Err(e) => {
+                        logger.warning(&format!("Could not read {}: {}", tree_file, e));
+                    }
+                }
+            }
+            Ok(s) => {
+                logger.warning(&format!("FastTree failed with exit code: {}", s));
+            }
+            Err(e) => {
+                logger.error(&format!("Failed to run FastTree: {}", e));
+            }
+        }
+    }
+}
+
+/// Print a phylogenetic tree from a Newick string as an indented hierarchy.
+///
+/// # Arguments
+/// * `newick` - A string slice containing a Newick tree.
+/// * `logger` - Your logger instance for output.
+///
+/// Example Newick:
+/// (A:0.1,(B:0.2,C:0.3):0.4,D:0.5);
+pub fn print_newick_tree(newick: &str, logger: &Logger) {
+    // Strip trailing semicolon if present
+    let newick = newick.trim_end_matches(';');
+
+    fn recurse(subtree: &str, depth: usize, logger: &Logger) {
+        // Split by top-level commas
+        let mut balance = 0;
+        let mut parts = Vec::new();
+        let mut start = 0;
+
+        for (i, ch) in subtree.char_indices() {
+            match ch {
+                '(' => balance += 1,
+                ')' => balance -= 1,
+                ',' if balance == 0 => {
+                    parts.push(&subtree[start..i]);
+                    start = i + 1;
+                }
+                _ => {}
+            }
+        }
+        parts.push(&subtree[start..]);
+
+        // Print each part
+        for part in parts {
+            let part = part.trim();
+
+            if part.starts_with('(') {
+                // Nested clade
+                let inner = part.trim_start_matches('(').trim_end_matches(|c| c == ')' || c == ':');
+                logger.output(&format!("{}[clade]", "  ".repeat(depth)));
+                recurse(inner, depth + 1, logger);
+            } else {
+                // Leaf: may contain a branch length (e.g. "A:0.1")
+                let name = part.split(':').next().unwrap_or("").trim();
+                if !name.is_empty() {
+                    logger.output(&format!("{}{}", "  ".repeat(depth), name));
+                }
+            }
+        }
+    }
+
+    recurse(newick, 0, logger);
 }
 
 pub fn run_r_plotting_script(histogram_file: &str, logger: &Logger, percent_for_tree: usize, output_dir: &str) {

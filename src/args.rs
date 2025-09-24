@@ -2,7 +2,7 @@ use clap::Parser;
 
 // setting up the command line parameters
 #[derive(Parser, Debug)]
-#[command(name = "RustaTools")]
+#[command(name = "Phylorust")]
 #[command(about = "Generate phylogenetically informative SNP site sets and FASTAs from multi-sample VCFs", long_about = None)]
 
 pub struct Args {
@@ -44,9 +44,22 @@ pub struct Args {
 
     /// Percent threshold to extract sites for tree construction
     #[arg(short='p', long="percent_for_tree", default_value_t=90)]
-    pub percent_for_tree: usize,
+    pub percent_threshold: usize,
 
     /// Generate FASTAs for a comma-separated list of percentiles (e.g., 80,90,95) or "all"
     #[arg(long = "generate_fastas", default_value = "")]
     pub generate_fastas: String,
+
+    /// Optional path to the FastTree binary.
+    /// 
+    /// If not provided, the program will search for `FastTree` in the system PATH.
+    /// Example: `--fasttree-bin ./bin/FastTree`
+    ///
+    /// By default, nucleotide mode (`-nt`) is used.
+    #[arg(long)]
+    pub fasttree_bin: Option<String>,
+
+    /// Skip FastTree tree generation, even if FastTree is available.
+    #[arg(long)]
+    pub skip_fasttree: bool,
 }

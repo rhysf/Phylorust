@@ -108,7 +108,7 @@ fn main() {
     let histogram_positions = read_genome_array_summary::load_or_generate_histogram(&variant_counts, &reference_counts, &vcf_entries_by_sample, name_type_locations.len(), &args, &logger);
     let settings_str = format!("m-{}-s-{}-e-{}-z-{}", args.min_read_depth, args.settings, args.exclude_contig, args.restrict_contig);
     let histogram_file = format!("{}/site_coverage_histogram-{}.tsv", args.output_dir, settings_str);
-    utils::run_r_plotting_script(&histogram_file, &logger, args.percent_for_tree, &args.output_dir);
+    utils::run_r_plotting_script(&histogram_file, &logger, args.percent_threshold, &args.output_dir);
 
     // Summarise 
     logger.information("──────────────────────────────");
@@ -128,11 +128,11 @@ fn main() {
             .filter_map(|s| s.trim().parse::<usize>().ok())
             .collect()
     } else {
-        vec![args.percent_for_tree]
+        vec![args.percent_threshold]
     };
 
     // generate FASTA(s)
-    for percent in percentiles_to_generate {
+    for &percent in &percentiles_to_generate {
         fasta_from_sites::generate_fasta_for_percent_site_set(
             percent,
             &histogram_positions,
@@ -141,6 +141,18 @@ fn main() {
             &args,
             &logger,
         );
+    }
+
+    // generate trees
+    if !args.skip_fasttree {
+        utils::run_fasttree_on_fastas(
+            &args.output_dir,
+            &percentiles_to_generate,
+            &logger,
+            args.fasttree_bin.as_deref(),
+        );
+    } else {
+        logger.information("Skipping tree generation (--skip-fasttree set).");
     }
 }
 
