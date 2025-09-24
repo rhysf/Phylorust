@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="images/logo.png" alt="Phylorust Logo" width="400"/>
+  <img src="images/logo.png" alt="Phylorust Logo" width="200"/>
 </p>
 
 # Phylorust
