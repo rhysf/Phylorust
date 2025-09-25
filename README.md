@@ -40,14 +40,33 @@ To build and run Phylorust, you’ll need:
 ---
 
 ## Installation
-Clone the repo and build with Cargo:
+Clone the repo and install with Cargo:
 
 ```bash
 git clone https://github.com/<your-username>/Phylorust.git
 cd Phylorust
+cargo install --path .
+```
+
+If you installed Rust with rustup, ~/.cargo/bin is normally already in your $PATH.
+If not, you can add it:
+
+```bash
+echo 'export PATH="$HOME/.cargo/bin:$PATH"' >> ~/.bashrc
+source ~/.bashrc
+```
+
+You can now run:
+
+```bash
+phylorust --help
+```
+
+Alternative (manual install): If you prefer to place the binary in ~/.local/bin
+
+```bash
 cargo build --release
 cp target/release/phylorust ~/.local/bin/
-phylorust --help
 ```
 
 ## Input file formats
@@ -63,7 +82,7 @@ Phylorust uses a tab-delimited file (Name_Type_Location.tab) with three columns:
 ## Example pipeline
 
 ```bash
-cargo run --release -- \
+phylorust \
   --fasta examples/Cryp_gatt_R265.genome.fa-scaffold3.14.fasta \
   --name_type_location examples/Name_Type_location.tab
 ```
