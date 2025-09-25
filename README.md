@@ -75,6 +75,28 @@ This will:
   4.  Produce FASTA alignments for each coverage threshold.
   5.  Run FastTree (if available) and print ASCII trees in the terminal.
 
+## Building with Docker
+
+```bash
+git clone https://github.com/rhysf/Phylorust.git
+cd Phylorust
+docker build -t phylorust .
+
+docker run --rm -v $(pwd)/examples:/examples phylorust \
+  --fasta /examples/Cryp_gatt_R265.genome.fa-scaffold3.14.fasta \
+  --name_type_location /examples/Name_Type_location.tab
+```
+
+## On HPC systems without Docker, you can convert the Docker image into a Singularity (Apptainer) image
+
+```bash
+apptainer build phylorust.sif docker-daemon://phylorust:latest
+
+apptainer run phylorust.sif \
+  --fasta examples/Cryp_gatt_R265.genome.fa-scaffold3.14.fasta \
+  --name_type_location examples/Name_Type_location.tab
+```
+
 ## Command-line arguments
 
 Key options (full list available with --help):
