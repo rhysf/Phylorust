@@ -133,6 +133,35 @@ fn main() {
 
     // generate FASTA(s)
     for &percent in &percentiles_to_generate {
+        // First check if histogram_positions has any sites for this percent
+        if let Some(sites) = histogram_positions.get(&percent) {
+            if sites.is_empty() {
+                logger.warning(&format!(
+                    "Skipping FASTA for {}% (no sites found in histogram).",
+                    percent
+                ));
+                continue;
+            }
+        } else {
+            logger.warning(&format!(
+                "Skipping FASTA for {}% (no entry in histogram_positions).",
+                percent
+            ));
+            continue;
+        }
+
+        // old check too (double safety)
+        let site_file = format!("{}/percent_{}.tab", args.output_dir, percent);
+        if let Ok(metadata) = std::fs::metadata(&site_file) {
+            if metadata.len() == 0 {
+                logger.warning(&format!(
+                    "Skipping FASTA for {}% (tab file is empty: {}).",
+                    percent, site_file
+                ));
+                continue;
+            }
+        }
+
         fasta_from_sites::generate_fasta_for_percent_site_set(
             percent,
             &histogram_positions,

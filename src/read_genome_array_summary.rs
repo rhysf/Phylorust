@@ -155,7 +155,6 @@ pub fn summarize_variant_site_coverage(
     // Phase 2: Compute histogram over informative sites only
     logger.information(&format!("summarize_variant_site_coverage: Compute histogram..."));
     let results: Vec<(usize, usize, Vec<(String, usize)>, usize)> = (1u32..=100)
-        .rev()
         .collect::<Vec<_>>()
         .into_par_iter()
         .map(|percent_u32| {
@@ -197,6 +196,17 @@ pub fn summarize_variant_site_coverage(
         }
     }
 
+    // Ensure histogram is sorted by percent
+    histogram.sort_by_key(|(p, _)| *p);
+
+    // Debug print of nonzero bins
+    //logger.information("Histogram debug (nonzero bins):");
+    //for (percent, count) in &histogram {
+    //    if *count > 0 {
+    //        logger.information(&format!("  {}% => {}", percent, count));
+    //    }
+    //}
+
     // Visualise
     visualize_variant_site_coverage(&histogram, args, logger);
 
@@ -212,19 +222,29 @@ pub fn summarize_variant_site_coverage(
 }
 
 fn visualize_variant_site_coverage(histogram: &Vec<(usize, usize)>, args: &Args, logger: &Logger) {
+    logger.output("visualize_variant_site_coverage: ASCII Plot...");
 
-    //logger.output("\nPhylogenetically informative site coverage:");
-    //logger.output("Percent_VCFs\tNum_Sites");
-    //for (percent, count) in histogram {
-    //    logger.output(&format!("{}\t{}", percent, count));
-    //}
-
-    logger.output("visualize_variant_site_coverage: ASCII Plot:");
+    // Find max value safely
     let max_val = histogram.first().map(|(_, v)| *v).unwrap_or(1) as f64;
+    if max_val <= 0.0 {
+        logger.warning("Histogram counts are all zero, skipping ASCII plot.");
+        return;
+    }
+
     for (percent, count) in histogram {
         // Show 100%, 1%, and every 10% step
         if *percent == 100 || *percent == 1 || percent % 10 == 0 {
-            let bar_len = (*count as f64 / max_val * 50.0).round() as usize;
+            let mut bar_len = (*count as f64 / max_val * 50.0).round() as usize;
+
+            // Cap at 200 characters to prevent runaway allocation
+            if bar_len > 200 {
+                logger.warning(&format!(
+                    "Bar length too large ({}), capping at 200 (percent={}, count={}, max_val={})",
+                    bar_len, percent, count, max_val
+                ));
+                bar_len = 200;
+            }
+
             let bar = "▇".repeat(bar_len);
             logger.output(&format!("{:>3}% | {:>6} | {}", percent, count, bar));
         }
