@@ -15,7 +15,7 @@ pub struct Args {
     pub name_type_location_filename: String,
 
     /// Output directory 
-    #[arg(short='o', long="output_dir", default_value="Rustatools_output")]
+    #[arg(short='o', long="output_dir", default_value="phylorust_output")]
     pub output_dir: String,
 
     /// Variant filtering mode: 
