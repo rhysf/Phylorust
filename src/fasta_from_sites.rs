@@ -24,22 +24,24 @@ pub fn generate_fasta_for_percent_site_set(
         return;
     }
 
-    // Print/log a few values from histogram_positions.get(&90) right before processing
-    //if let Some(sites) = histogram_positions.get(&args.percent_for_tree) {
-    //    logger.information(&format!("Found {} sites for {}% threshold", sites.len(), args.percent_for_tree));
-    //    for (contig, pos) in sites.iter().take(5) {
-    //        logger.information(&format!("Example site: {}:{}", contig, pos));
-    //    }
-    //}
-
     logger.information(&format!("Generating FASTA for {}% coverage...", percent));
 
-    // Build reference map
+    // Lookup positions for this threshold
+    let positions = match histogram_positions.get(&percent) {
+        Some(p) if !p.is_empty() => p,
+        _ => {
+            logger.warning(&format!("No positions found for {}% — skipping FASTA.", percent));
+            return;
+        }
+    };
+
+    // Build a minimal reference map only for required contig/pos
     let mut ref_map: HashMap<(String, usize), char> = HashMap::new();
-    for fasta_entry in fasta {
-        let chars: Vec<char> = fasta_entry.seq.chars().collect();
-        for (i, base) in chars.iter().enumerate() {
-            ref_map.insert((fasta_entry.id.clone(), i + 1), *base);
+    for (contig, pos) in positions {
+        if let Some(fasta_entry) = fasta.iter().find(|f| f.id == *contig) {
+            if let Some(base) = fasta_entry.seq.chars().nth(*pos - 1) {
+                ref_map.insert((contig.clone(), *pos), base);
+            }
         }
     }
 
@@ -64,61 +66,33 @@ pub fn generate_fasta_for_percent_site_set(
         sample_bases.insert(sample.clone(), pos_map);
     }
 
-    // Prepare output: sample_name → sequence string
-    let mut sample_to_sequence: HashMap<String, String> = HashMap::new();
-
-    let positions = match histogram_positions.get(&percent) {
-        Some(p) => p,
-        None => {
-            logger.warning(&format!("No positions found for {}% — skipping FASTA.", percent));
-            return;
-        }
-    };
-
-    // Get set of all samples
-    let all_samples: Vec<String> = sample_bases.keys().cloned().collect();
-
-    // For each sample, build sequence
-    for sample in &all_samples {
-        let mut seq = String::with_capacity(positions.len());
-
-        let base_map = match sample_bases.get(sample) {
-            Some(map) => map,
-            None => {
-                logger.warning(&format!("Sample '{}' not found in sample_bases", sample));
-                continue;
-            }
-        };
-
-        for (contig, pos) in positions {
-            if let Some(&base) = base_map.get(&(contig.clone(), *pos)) {
-                seq.push(base);
-            } else if let Some(&ref_base) = ref_map.get(&(contig.clone(), *pos)) {
-                seq.push(ref_base);  // fallback to reference
-            } else {
-                seq.push('N');  // unknown
-            }
-        }
-
-        sample_to_sequence.insert(sample.clone(), seq);
-    }
-
     if sample_bases.is_empty() {
         logger.warning("No sample bases were collected. Skipping FASTA writing.");
         return;
     }
 
-    // Write FASTA file
+    // Write directly to file without holding all sequences in memory
     let file = File::create(&out_fasta_path).unwrap_or_else(|e| {
         logger.error(&format!("Could not create FASTA '{}': {}", out_fasta_path, e));
         std::process::exit(1);
     });
-
     let mut writer = BufWriter::new(file);
 
-    for (sample, seq) in sample_to_sequence {
+    // Stream each sample’s sequence
+    for sample in sample_bases.keys() {
         writeln!(writer, ">{}", sample).unwrap();
-        writeln!(writer, "{}", seq).unwrap();
+        let base_map = &sample_bases[sample];
+
+        for (contig, pos) in positions {
+            if let Some(&base) = base_map.get(&(contig.clone(), *pos)) {
+                write!(writer, "{}", base).unwrap();
+            } else if let Some(&ref_base) = ref_map.get(&(contig.clone(), *pos)) {
+                write!(writer, "{}", ref_base).unwrap();
+            } else {
+                write!(writer, "N").unwrap();
+            }
+        }
+        writeln!(writer).unwrap();
     }
 
     logger.information(&format!("Saved FASTA to {}", out_fasta_path));
