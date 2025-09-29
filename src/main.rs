@@ -23,6 +23,29 @@ fn main() {
     let args = Args::parse();
     let logger = Logger;
 
+    // Base output folder (phylorust_output by default)
+    fs::create_dir_all(&args.output_dir).unwrap_or_else(|error|{
+        logger.error(&format!("Error with output directory: {}", error));
+        process::exit(1);
+    });
+
+    // VCF summaries folder (shared across runs)
+    let vcf_summary_dir = format!("{}/vcf_summaries", args.output_dir);
+    fs::create_dir_all(&vcf_summary_dir).unwrap_or_else(|error| {
+        logger.error(&format!("Error with VCF summaries directory: {}", error));
+        process::exit(1);
+    });
+
+    // Run-specific folder (named after the tab file)
+    let tabfile_basename = Path::new(&args.name_type_location_filename).file_stem().unwrap().to_str().unwrap();
+    let run_dir = format!("{}/{}", args.output_dir, tabfile_basename);
+    fs::create_dir_all(&run_dir).unwrap_or_else(|error| {
+        logger.error(&format!("Error with run-specific directory: {}", error));
+        process::exit(1);
+    });
+
+    logger.information(&format!("Output directories: vcf_summaries={}, run_dir={}", vcf_summary_dir, run_dir));
+
     // Read Name Type Location file
     let name_type_locations = read_tab::read_name_type_location_file(&args.name_type_location_filename, &logger);
 
@@ -36,12 +59,6 @@ fn main() {
     // Read FASTA file to memory
     let fasta = read_fasta::read_fasta(args.fasta_filename.clone(), &logger);
 
-    // Make output folder
-    fs::create_dir_all(&args.output_dir).unwrap_or_else(|error|{
-        logger.error(&format!("Error with output directory: {}", error));
-        process::exit(1);
-    });
-
     // go through each VCF converting to summary files of reference and variant positions
     let mut global_sample_names: HashSet<String> = HashSet::new();
     let mut reference_paths: Vec<String> = Vec::new();
@@ -52,7 +69,7 @@ fn main() {
 
         // Output files
         let vcf_path = &name_type_location.location;
-        let (outfile_reference_bases, outfile_variant_bases) = generate_output_filenames(&args, &logger, vcf_path);
+        let (outfile_reference_bases, outfile_variant_bases) = generate_output_filenames(&args, &logger, &vcf_summary_dir, vcf_path);
         reference_paths.push(outfile_reference_bases.clone());
         variant_paths.push(outfile_variant_bases.clone());
 
@@ -105,14 +122,14 @@ fn main() {
     logger.information("──────────────────────────────");
 
     // Generate histogram
-    let histogram_positions = read_genome_array_summary::load_or_generate_histogram(&variant_counts, &reference_counts, &vcf_entries_by_sample, name_type_locations.len(), &args, &logger);
+    let histogram_positions = read_genome_array_summary::load_or_generate_histogram(&variant_counts, &reference_counts, &vcf_entries_by_sample, name_type_locations.len(), &args, &run_dir, &logger);
     let settings_str = format!("m-{}-s-{}-e-{}-z-{}", args.min_read_depth, args.settings, args.exclude_contig, args.restrict_contig);
-    let histogram_file = format!("{}/site_coverage_histogram-{}.tsv", args.output_dir, settings_str);
-    utils::run_r_plotting_script(&histogram_file, &logger, args.percent_threshold, &args.output_dir);
+    let histogram_file = format!("{}/site_coverage_histogram-{}.tsv", run_dir, settings_str);
+    utils::run_r_plotting_script(&histogram_file, &logger, args.percent_threshold, &run_dir);
 
     // Summarise 
     logger.information("──────────────────────────────");
-    read_genome_array_summary::write_site_position_files(&histogram_positions, &args.output_dir, &logger);
+    read_genome_array_summary::write_site_position_files(&histogram_positions, &run_dir, &logger);
     logger.information(&format!("vcf_entries_by_sample has {} samples", vcf_entries_by_sample.len()));
 
     for (sample, entries) in &vcf_entries_by_sample {
@@ -167,7 +184,7 @@ fn main() {
             &histogram_positions,
             &fasta,
             &vcf_entries_by_sample,
-            &args,
+            &run_dir,
             &logger,
         );
     }
@@ -175,7 +192,7 @@ fn main() {
     // generate trees
     if !args.skip_fasttree {
         utils::run_fasttree_on_fastas(
-            &args.output_dir,
+            &run_dir,
             &percentiles_to_generate,
             &logger,
             args.fasttree_bin.as_deref(),
@@ -185,7 +202,7 @@ fn main() {
     }
 }
 
-fn generate_output_filenames(args: &Args, logger: &Logger, vcf_path: &str) -> (String, String) {
+fn generate_output_filenames(args: &Args, logger: &Logger, summary_dir: &str, vcf_path: &str) -> (String, String) {
 
     let vcf_filename = Path::new(vcf_path)
         .file_name()
@@ -203,12 +220,12 @@ fn generate_output_filenames(args: &Args, logger: &Logger, vcf_path: &str) -> (S
 
     let outfile_reference_bases = format!(
         "{}/{}-{}-reference-bases.tab",
-        args.output_dir, vcf_filename, rustatools_settings
+        summary_dir, vcf_filename, rustatools_settings
     );
 
     let outfile_variant_bases = format!(
         "{}/{}-{}-variant-bases.tab",
-        args.output_dir, vcf_filename, rustatools_settings
+        summary_dir, vcf_filename, rustatools_settings
     );
 
     logger.output(&format!("Outfile reference bases = {}", outfile_reference_bases));

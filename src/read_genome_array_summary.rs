@@ -60,7 +60,9 @@ pub fn load_contig_position_counts(file_paths: &[String], logger: &Logger) -> Ha
 }
 
 /// Builds sample_bases: sample_name → (contig, pos) → base
-pub fn build_sample_bases(vcf_entries_by_sample: &HashMap<String, Vec<VCFEntry>>) -> HashMap<String, HashMap<(String, usize), char>> {
+pub fn build_sample_bases(vcf_entries_by_sample: &HashMap<String, Vec<VCFEntry>>, logger: &Logger) -> HashMap<String, HashMap<(String, usize), char>> {
+    logger.information("build_sample_bases: sample_name → (contig, pos) → base");
+    
     let mut sample_bases: HashMap<String, HashMap<(String, usize), char>> = HashMap::new();
 
     for (sample, entries) in vcf_entries_by_sample {
@@ -87,24 +89,26 @@ pub fn load_or_generate_histogram(
     vcf_entries_by_sample: &HashMap<String, Vec<VCFEntry>>,
     num_vcfs: usize, 
     args: &Args, 
+    rundir: &str,
     logger: &Logger,
 ) -> HashMap<usize, Vec<(String, usize)>> {
     let settings_str = format!(
         "m-{}-s-{}-e-{}-z-{}",
         args.min_read_depth, args.settings, args.exclude_contig, args.restrict_contig
     );
-    let outfile_path = format!("{}/site_coverage_histogram-{}.tsv", args.output_dir, settings_str);
+    let outfile_path = format!("{}/site_coverage_histogram-{}.tsv", rundir, settings_str);
+    logger.information(&format!("load_or_generate_histogram: Output file = '{}'", outfile_path));
 
     // Check if summary already exists
     if Path::new(&outfile_path).exists() {
-        logger.information(&format!("Found existing histogram file '{}'. Loading instead of recalculating.", outfile_path));
-        let histogram_positions = load_histogram_positions_from_disk(&args.output_dir, logger);
+        logger.information(&format!("load_or_generate_histogram: Found existing histogram file '{}'. Loading instead of recalculating.", outfile_path));
+        let histogram_positions = load_histogram_positions_from_disk(&rundir, logger);
         let histogram = read_histogram_from_file(&outfile_path, logger);
-        visualize_variant_site_coverage(&histogram, args, logger);
+        visualize_variant_site_coverage(&histogram, args, &rundir, logger);
         return histogram_positions;
     }
 
-    let sample_bases = build_sample_bases(vcf_entries_by_sample);
+    let sample_bases = build_sample_bases(vcf_entries_by_sample, logger);
 
     // Else: fallback to real calculation
     summarize_variant_site_coverage(
@@ -113,6 +117,7 @@ pub fn load_or_generate_histogram(
         &sample_bases,
         num_vcfs,
         args,
+        &rundir,
         logger,
     )
 }
@@ -122,7 +127,8 @@ pub fn summarize_variant_site_coverage(
     reference_counts: &HashMap<String, HashMap<usize, usize>>, 
     sample_bases: &HashMap<String, HashMap<(String, usize), char>>,
     num_vcfs: usize, 
-    args: &Args, 
+    args: &Args,
+    rundir: &str,
     logger: &Logger) -> HashMap<usize, Vec<(String, usize)>> {
     logger.information(&format!("summarize_variant_site_coverage: Flatten contig/pos to global position count across {} VCFs...", num_vcfs));
 
@@ -208,7 +214,7 @@ pub fn summarize_variant_site_coverage(
     //}
 
     // Visualise
-    visualize_variant_site_coverage(&histogram, args, logger);
+    visualize_variant_site_coverage(&histogram, args, &rundir, logger);
 
     // Output skipped invariant count
     if !args.include_invariants && skipped_invariant_sites > 0 {
@@ -221,7 +227,7 @@ pub fn summarize_variant_site_coverage(
     histogram_positions
 }
 
-fn visualize_variant_site_coverage(histogram: &Vec<(usize, usize)>, args: &Args, logger: &Logger) {
+fn visualize_variant_site_coverage(histogram: &Vec<(usize, usize)>, args: &Args, rundir: &str, logger: &Logger) {
     logger.output("visualize_variant_site_coverage: ASCII Plot...");
 
     // Find max value safely
@@ -252,7 +258,7 @@ fn visualize_variant_site_coverage(histogram: &Vec<(usize, usize)>, args: &Args,
 
     // outfile
     let settings_str = format!("m-{}-s-{}-e-{}-z-{}", args.min_read_depth, args.settings, args.exclude_contig, args.restrict_contig);
-    let outfile_path = format!("{}/site_coverage_histogram-{}.tsv", args.output_dir, settings_str);
+    let outfile_path = format!("{}/site_coverage_histogram-{}.tsv", rundir, settings_str);
 
     // Skip writing if file exists
     if Path::new(&outfile_path).exists() {

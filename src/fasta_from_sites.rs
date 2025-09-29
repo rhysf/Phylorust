@@ -1,21 +1,20 @@
+use crate::logger::Logger;
+use crate::read_vcf::VCFEntry;
+use crate::read_fasta::Fasta;
 use std::collections::{HashMap};
 use std::fs::{File};
 use std::io::{BufWriter, Write};
 use std::path::Path;
-use crate::args::Args;
-use crate::logger::Logger;
-use crate::read_vcf::VCFEntry;
-use crate::read_fasta::Fasta;
 
 pub fn generate_fasta_for_percent_site_set(
     percent: usize,
     histogram_positions: &HashMap<usize, Vec<(String, usize)>>,
     fasta: &Vec<Fasta>,
     vcf_entries_by_sample: &HashMap<String, Vec<VCFEntry>>,
-    args: &Args,
+    target_dir: &str,
     logger: &Logger,
 ) {
-    let out_fasta_path = format!("{}/percent_{}.fasta", args.output_dir, percent);
+    let out_fasta_path = format!("{}/percent_{}.fasta", target_dir, percent);
     println!("generate_fasta_for_percent_site_set: output: {}", out_fasta_path);
 
     // Skip if already exists
