@@ -102,8 +102,7 @@ cd Phylorust
 docker build -t phylorust .
 
 docker run --rm -v $(pwd)/examples:/examples phylorust \
-  --fasta /examples/Cryp_gatt_R265.genome.fa-scaffold3.14.fasta \
-  --name_type_location /examples/Name_Type_location.tab
+  --fasta /examples/Cryp_gatt_R265.genome.fa-scaffold3.14.fasta \ --name_type_location /examples/Name_Type_location_Docker.tab
 ```
 
 ## On HPC systems without Docker, you can convert the Docker image into a Singularity (Apptainer) image

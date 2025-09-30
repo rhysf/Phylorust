@@ -15,6 +15,7 @@ RUN apt-get update && apt-get install -y \
 WORKDIR /app
 
 # Copy sources
+# cache bust 3
 COPY . .
 
 # Build the binary in release mode
