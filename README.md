@@ -83,8 +83,8 @@ Phylorust uses a tab-delimited file (Name_Type_Location.tab) with three columns:
 
 ```bash
 phylorust \
-  --fasta examples/Cryp_gatt_R265.genome.fa-scaffold3.14.fasta \
-  --name_type_location examples/Name_Type_location.tab
+  --fasta ./examples/Cryp_gatt_R265.genome.fa-scaffold3.14.fasta \
+  --name_type_location ./examples/Name_Type_location.tab
 ```
 
 This will:
