@@ -7,60 +7,75 @@ use std::fs::File;
 use std::io::{BufRead, BufReader, Write, BufWriter};
 use crate::args::Args;
 use rayon::prelude::*;
+use std::sync::{Arc, Mutex};
 
-pub fn load_contig_position_counts(file_paths: &[String], logger: &Logger) -> HashMap<String, HashMap<usize, usize>> {
-    let mut contig_position_counts: HashMap<String, HashMap<usize, usize>> = HashMap::new();
+pub fn load_contig_position_counts_parallel(
+    file_paths: &[String],
+    logger: Logger,
+) -> HashMap<String, HashMap<usize, usize>> {
+    let logger = Arc::new(Mutex::new(logger));
 
-    for path in file_paths {
-        logger.information(&format!("load_contig_position_counts: Loading position counts from file: {}", path));
-
-        let file = File::open(path).unwrap_or_else(|e| {
-            logger.error(&format!("Could not open {}: {}", path, e));
-            std::process::exit(1);
-        });
-
-        let reader = BufReader::new(file);
-        let mut current_contig: Option<String> = None;
-        let mut positions_added_in_file = 0usize;
-
-        for line in reader.lines() {
-            let line = line.expect("Error reading line");
-
-            if line.starts_with("##") {
-                current_contig = Some(line.trim_start_matches("##").to_string());
-                continue;
-            }
-
-            let contig = match &current_contig {
-                Some(c) => c,
-                None => {
-                    logger.error("No contig header found before position line.");
-                    continue;
+    file_paths
+        .par_iter()
+        .map(|path| read_single_tab_parallel(path, &logger))
+        .reduce(HashMap::new, |mut acc, map| {
+            for (contig, pos_map) in map {
+                let entry = acc.entry(contig).or_insert_with(HashMap::new);
+                for (pos, count) in pos_map {
+                    *entry.entry(pos).or_insert(0) += count;
                 }
-            };
-
-            // Split and tolerate both 2- and 3-column formats
-            let parts: Vec<&str> = line.split('\t').collect();
-            if parts.len() < 2 {
-                logger.warning(&format!("Skipping malformed line: {}", line));
-                continue;
             }
+            acc
+        })
+}
 
-            let start: usize = parts[0].parse().unwrap_or(0);
-            let stop: usize = parts[1].parse().unwrap_or(start);
-            if start == 0 || stop == 0 {
-                continue;
-            }
+fn read_single_tab_parallel(
+    path: &str,
+    logger: &Arc<Mutex<Logger>>,
+) -> HashMap<String, HashMap<usize, usize>> {
+    let mut contig_position_counts: HashMap<String, HashMap<usize, usize>> = HashMap::new();
+    let file = File::open(path).unwrap_or_else(|e| {
+        let l = logger.lock().unwrap();
+        l.error(&format!("Could not open {}: {}", path, e));
+        std::process::exit(1);
+    });
 
-            // inclusive range for single-base sites (start == stop)
-            let contig_counts = contig_position_counts.entry(contig.clone()).or_default();
-            for pos in start..=stop {
-                *contig_counts.entry(pos).or_insert(0) += 1;
-                positions_added_in_file += 1;
-            }
+    let reader = BufReader::new(file);
+    let mut current_contig: Option<String> = None;
+    let mut positions_added_in_file = 0usize;
+
+    for line in reader.lines().flatten() {
+        if line.starts_with("##") {
+            current_contig = Some(line.trim_start_matches("##").to_string());
+            continue;
         }
-        logger.information(&format!("load_contig_position_counts: Positions added from {}: {}", path, positions_added_in_file));
+
+        let contig = match &current_contig {
+            Some(c) => c.clone(),
+            None => continue,
+        };
+
+        let parts: Vec<&str> = line.split('\t').collect();
+        if parts.len() != 3 {
+            continue;
+        }
+
+        let start: usize = parts[0].parse().unwrap_or(0);
+        let stop: usize = parts[1].parse().unwrap_or(start);
+        let contig_counts = contig_position_counts.entry(contig.clone()).or_default();
+
+        for pos in start..=stop {
+            *contig_counts.entry(pos).or_insert(0) += 1;
+            positions_added_in_file += 1;
+        }
     }
+
+    let l = logger.lock().unwrap();
+    l.information(&format!(
+        "load_contig_position_counts_parallel: Positions added from {}: {}",
+        path, positions_added_in_file
+    ));
+
     contig_position_counts
 }
 

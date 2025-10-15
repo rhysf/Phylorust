@@ -14,6 +14,7 @@ mod read_genome_array_summary;
 mod read_tab;
 mod read_vcf;
 mod utils;
+use rayon::join;
 
 use args::Args;
 use logger::Logger;
@@ -146,8 +147,12 @@ fn main() {
     let (variant_paths, reference_paths) = collect_tab_paths_by_settings(&vcf_summary_dir, args.settings, &logger);
 
     // Load those into memory-efficient counters
-    let variant_counts = read_genome_array_summary::load_contig_position_counts(&variant_paths, &logger);
-    let reference_counts = read_genome_array_summary::load_contig_position_counts(&reference_paths, &logger);
+    //let variant_counts = read_genome_array_summary::load_contig_position_counts(&variant_paths, &logger);
+    //let reference_counts = read_genome_array_summary::load_contig_position_counts(&reference_paths, &logger);
+    let (variant_counts, reference_counts) = join(
+        || read_genome_array_summary::load_contig_position_counts_parallel(&variant_paths, logger.clone()),
+        || read_genome_array_summary::load_contig_position_counts_parallel(&reference_paths, logger.clone()),
+    );
 
     logger.information("──────────────────────────────");
 
