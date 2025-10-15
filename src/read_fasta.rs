@@ -1,6 +1,7 @@
 use crate::logger::Logger;
 use std::fs::{self};
 use std::process;
+use std::sync::{Arc, Mutex};
 
 pub struct Fasta {
     pub id:String,
@@ -8,12 +9,12 @@ pub struct Fasta {
     pub seq:String,
 }
 
-pub fn read_fasta(file : String, logger : &Logger) -> Vec<Fasta> {
+pub fn read_fasta(file : String, logger: &Arc<Mutex<Logger>>) -> Vec<Fasta> {
     println!("read_fasta: processing file: {}", file);
 
     // read file
     let fasta_file = fs::read_to_string(&file).unwrap_or_else(|error|{
-        logger.error(&format!("Error with file: {} {}", file, error));
+        logger.lock().unwrap().error(&format!("Error with file: {} {}", file, error));
         process::exit(1);
     });
 
@@ -50,7 +51,7 @@ pub fn read_fasta(file : String, logger : &Logger) -> Vec<Fasta> {
     }
     //fasta.push(Fasta { id: last_id.to_string(), desc: last_desc.to_string(), seq: last_sequence }); 
     fasta.push(Fasta { id: last_id.to_string(), seq: last_sequence }); 
-    logger.information("read_fasta: Finished processing file");
+    logger.lock().unwrap().information("read_fasta: Finished processing file");
 
     return fasta;
 }

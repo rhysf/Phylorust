@@ -1,4 +1,5 @@
 use clap::Parser;
+use num_cpus;
 
 // setting up the command line parameters
 #[derive(Parser, Debug)]
@@ -66,4 +67,8 @@ pub struct Args {
     /// Skip FastTree tree generation, even if FastTree is available.
     #[arg(long)]
     pub skip_fasttree: bool,
+
+    /// Number of threads to use for parallel processing
+    #[arg(long = "threads", short = 't', default_value_t = num_cpus::get())]
+    pub threads: usize,
 }

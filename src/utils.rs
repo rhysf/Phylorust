@@ -6,6 +6,7 @@ use std::process::{Command, Stdio};
 use which::which;
 use std::collections::{HashSet};
 use std::io::{Write};
+use std::sync::{Arc, Mutex};
 
 pub fn check_r_installed() -> bool {
     Command::new("Rscript")
@@ -24,7 +25,7 @@ pub fn run_fasttree_on_fastas(
     output_dir: &str,
     percents: &[usize],
     settings_str: &str,
-    logger: &Logger,
+    logger: &Arc<Mutex<Logger>>,
     fasttree_bin: Option<&str>,
 ) {
     // Decide which binary to use
@@ -33,32 +34,32 @@ pub fn run_fasttree_on_fastas(
     } else if let Ok(path) = which("FastTree") {
         path
     } else {
-        logger.warning(
+        logger.lock().unwrap().warning(
             "FastTree not found (neither in PATH nor provided with --fasttree-bin). Skipping tree generation.",
         );
         return;
     };
 
-    logger.information(&format!("Using FastTree binary: {}", fasttree_exe.display()));
+    logger.lock().unwrap().information(&format!("Using FastTree binary: {}", fasttree_exe.display()));
 
     for percent in percents {
         let fasta_file = format!("{}/percent_{}-{}.fasta", output_dir, percent, settings_str);
         let tree_file = format!("{}/percent_{}-{}-FastTree.tree", output_dir, percent, settings_str);
 
         if !Path::new(&fasta_file).exists() {
-            logger.warning(&format!(
+            logger.lock().unwrap().warning(&format!(
                 "FASTA file not found for {}%: {}",
                 percent, fasta_file
             ));
             continue;
         }
 
-        logger.information(&format!("Running FastTree on {}", fasta_file));
+        logger.lock().unwrap().information(&format!("Running FastTree on {}", fasta_file));
 
         let tree_out = match File::create(&tree_file) {
             Ok(f) => f,
             Err(e) => {
-                logger.error(&format!("Failed to create tree output file: {}", e));
+                logger.lock().unwrap().error(&format!("Failed to create tree output file: {}", e));
                 continue;
             }
         };
@@ -70,24 +71,24 @@ pub fn run_fasttree_on_fastas(
             .status()
         {
             Ok(s) if s.success() => {
-                logger.information(&format!("Tree written to {}", tree_file));
+                logger.lock().unwrap().information(&format!("Tree written to {}", tree_file));
 
                 // Read Newick and pretty-print ASCII tree
                 match std::fs::read_to_string(&tree_file) {
                     Ok(newick) => {
-                        logger.information(&format!("ASCII tree for {}%:", percent));
-                        crate::utils::print_newick_tree(&newick, logger);
+                        logger.lock().unwrap().information(&format!("ASCII tree for {}%:", percent));
+                        print_newick_tree(&newick, logger);
                     }
                     Err(e) => {
-                        logger.warning(&format!("Could not read {}: {}", tree_file, e));
+                        logger.lock().unwrap().warning(&format!("Could not read {}: {}", tree_file, e));
                     }
                 }
             }
             Ok(s) => {
-                logger.warning(&format!("FastTree failed with exit code: {}", s));
+                logger.lock().unwrap().warning(&format!("FastTree failed with exit code: {}", s));
             }
             Err(e) => {
-                logger.error(&format!("Failed to run FastTree: {}", e));
+                logger.lock().unwrap().error(&format!("Failed to run FastTree: {}", e));
             }
         }
     }
@@ -101,11 +102,11 @@ pub fn run_fasttree_on_fastas(
 ///
 /// Example Newick:
 /// (A:0.1,(B:0.2,C:0.3):0.4,D:0.5);
-pub fn print_newick_tree(newick: &str, logger: &Logger) {
+pub fn print_newick_tree(newick: &str, logger: &Arc<Mutex<Logger>>) {
     // Strip trailing semicolon if present
     let newick = newick.trim_end_matches(';');
 
-    fn recurse(subtree: &str, depth: usize, logger: &Logger) {
+    fn recurse(subtree: &str, depth: usize, logger: &Arc<Mutex<Logger>>) {
         // Split by top-level commas
         let mut balance = 0;
         let mut parts = Vec::new();
@@ -131,13 +132,13 @@ pub fn print_newick_tree(newick: &str, logger: &Logger) {
             if part.starts_with('(') {
                 // Nested clade
                 let inner = part.trim_start_matches('(').trim_end_matches(|c| c == ')' || c == ':');
-                logger.output(&format!("{}[clade]", "  ".repeat(depth)));
+                logger.lock().unwrap().output(&format!("{}[clade]", "  ".repeat(depth)));
                 recurse(inner, depth + 1, logger);
             } else {
                 // Leaf: may contain a branch length (e.g. "A:0.1")
                 let name = part.split(':').next().unwrap_or("").trim();
                 if !name.is_empty() {
-                    logger.output(&format!("{}{}", "  ".repeat(depth), name));
+                    logger.lock().unwrap().output(&format!("{}{}", "  ".repeat(depth), name));
                 }
             }
         }
@@ -146,13 +147,13 @@ pub fn print_newick_tree(newick: &str, logger: &Logger) {
     recurse(newick, 0, logger);
 }
 
-pub fn run_r_plotting_script(histogram_file: &str, logger: &Logger, percent_for_tree: usize, output_dir: &str) {
+pub fn run_r_plotting_script(histogram_file: &str, percent_for_tree: usize, output_dir: &str, logger: &Arc<Mutex<Logger>>) {
     if !check_r_installed() {
-        logger.warning("run_r_plotting_script: R not found. Skipping graphical histogram generation.");
+        logger.lock().unwrap().warning("run_r_plotting_script: R not found. Skipping graphical histogram generation.");
         return;
     }
 
-    logger.information("run_r_plotting_script: Writing Rscript...");
+    logger.lock().unwrap().information("run_r_plotting_script: Writing Rscript...");
 
     let r_script = r#"
 #!/usr/bin/env Rscript
@@ -278,11 +279,11 @@ message("Saved plots to: ", output_prefix, ".png and .pdf")
 
     let script_path = format!("{}/plot_histogram.R", output_dir);
     if let Err(e) = write(&script_path, r_script) {
-        logger.error(&format!("Failed to write R script: {}", e));
+        logger.lock().unwrap().error(&format!("Failed to write R script: {}", e));
         return;
     }
 
-    logger.information("Rscript detected. Generating graphical histogram...");
+    logger.lock().unwrap().information("Rscript detected. Generating graphical histogram...");
 
     let status = Command::new("Rscript")
         .arg(script_path)
@@ -291,9 +292,9 @@ message("Saved plots to: ", output_prefix, ".png and .pdf")
         .status();
 
     match status {
-        Ok(s) if s.success() => logger.information("Histogram plot generated successfully."),
-        Ok(s) => logger.warning(&format!("Rscript failed with exit code: {}", s)),
-        Err(e) => logger.error(&format!("Failed to run Rscript: {}", e)),
+        Ok(s) if s.success() => logger.lock().unwrap().information("Histogram plot generated successfully."),
+        Ok(s) => logger.lock().unwrap().warning(&format!("Rscript failed with exit code: {}", s)),
+        Err(e) => logger.lock().unwrap().error(&format!("Failed to run Rscript: {}", e)),
     }
 
     // Optional: clean up

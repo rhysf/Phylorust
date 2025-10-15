@@ -5,6 +5,7 @@ use std::path::Path;
 use std::fs::File;
 use std::collections::{HashMap};
 use std::io::{BufRead, BufReader};
+use std::sync::{Arc, Mutex};
 
 pub struct NameTypeLocation {
     pub name:String,
@@ -12,13 +13,13 @@ pub struct NameTypeLocation {
     pub location:String,
 }
 
-pub fn read_name_type_location_file(file : &str, logger : &Logger) -> Vec<NameTypeLocation> {
-    logger.information(&format!("read_name_type_location_file: Processing file: {}", file));
+pub fn read_name_type_location_file(file : &str, logger: &Arc<Mutex<Logger>>) -> Vec<NameTypeLocation> {
+    logger.lock().unwrap().information(&format!("read_name_type_location_file: Processing file: {}", file));
 
     let mut name_type_locations = Vec::new();
 
     let content = fs::read_to_string(file).unwrap_or_else(|error|{
-        logger.error(&format!("Error with file: {} {}", file, error));
+        logger.lock().unwrap().error(&format!("Error with file: {} {}", file, error));
         process::exit(1);
     });
 
@@ -28,20 +29,20 @@ pub fn read_name_type_location_file(file : &str, logger : &Logger) -> Vec<NameTy
 
         // check there are 3 columns
         if line_parts.len() != 3 {
-            logger.error(&format!("Error with format of file: {} on line number {} = {}", file, index, line));
+            logger.lock().unwrap().error(&format!("Error with format of file: {} on line number {} = {}", file, index, line));
             process::exit(1);
         }
 
         // check files exist
         if !Path::new(line_parts[2]).exists() {
-            logger.error(&format!("Error: File {} does not exist", line_parts[2]));
+            logger.lock().unwrap().error(&format!("Error: File {} does not exist", line_parts[2]));
             process::exit(1);
         }
 
         // check that 2nd column says vcf (case-insensitive)
         let filetype = line_parts[1].trim();
         if filetype.to_lowercase() != "vcf" {
-            logger.warning(&format!("Ignoring line {}: '{}'. Unexpected filetype '{}', expected 'VCF'", index + 1, line, filetype));
+            logger.lock().unwrap().warning(&format!("Ignoring line {}: '{}'. Unexpected filetype '{}', expected 'VCF'", index + 1, line, filetype));
             continue;
         }
 
@@ -58,10 +59,10 @@ pub fn read_name_type_location_file(file : &str, logger : &Logger) -> Vec<NameTy
 /// Builds sample_bases from the .tab summary files: sample_name → (contig, pos) → base
 pub fn build_sample_bases_from_tabs(
     variant_tab_paths: &[String],
-    logger: &Logger,
+    logger: &Arc<Mutex<Logger>>,
 ) -> HashMap<String, HashMap<(String, usize), char>> {
 
-    logger.information("build_sample_bases_from_tabs: rebuilding sample bases from .tab files");
+    logger.lock().unwrap().information("build_sample_bases_from_tabs: rebuilding sample bases from .tab files");
     let mut sample_bases: HashMap<String, HashMap<(String, usize), char>> = HashMap::new();
 
     for path in variant_tab_paths {
@@ -81,10 +82,10 @@ pub fn build_sample_bases_from_tabs(
             .replace("het_deletion-", "")
             .replace("het-", "");
 
-        logger.information(&format!("build_sample_bases_from_tabs: reading sample '{}'", sample_name));
+        logger.lock().unwrap().information(&format!("build_sample_bases_from_tabs: reading sample '{}'", sample_name));
 
         let file = File::open(path).unwrap_or_else(|e| {
-            logger.error(&format!("Could not open {}: {}", path, e));
+            logger.lock().unwrap().error(&format!("Could not open {}: {}", path, e));
             std::process::exit(1);
         });
 
@@ -125,7 +126,7 @@ pub fn build_sample_bases_from_tabs(
         }
     }
 
-    logger.information(&format!(
+    logger.lock().unwrap().information(&format!(
         "build_sample_bases_from_tabs: collected {} samples total",
         sample_bases.len()
     ));

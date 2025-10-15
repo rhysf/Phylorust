@@ -3,7 +3,7 @@ use std::fs::{self};
 use std::process;
 use std::path::Path;
 use std::collections::{HashSet, HashMap};
-use sysinfo::{System};
+//use sysinfo::{System};
 
 mod args;
 mod fasta_from_sites;
@@ -15,20 +15,21 @@ mod read_tab;
 mod read_vcf;
 mod utils;
 use rayon::join;
+use rayon::prelude::*;
+use rayon::ThreadPoolBuilder;
+use std::sync::{Arc, Mutex};
 
 use args::Args;
 use logger::Logger;
+use crate::logger::LogExt;
 
 fn main() {
 
     let args = Args::parse();
-    let logger = Logger;
+    let logger = Arc::new(Mutex::new(Logger));
 
-    // Settings
-    //let het_code = match args.heterozygosity_encoding.as_str() {
-    //    "iupac" => "h-i",
-    //    _ => "h-a",
-    //};
+    logger.lock().unwrap().information(&format!("Phylorust: Using up to {} thread(s)", args.threads));
+
     let rustatools_summary_string = format!("m-{}-e-{}-z-{}-h-{}",
         args.min_read_depth,
         args.exclude_contig,
@@ -37,15 +38,6 @@ fn main() {
     );
 
     let rustatools_analysis_string = format!("{}-s-{}", rustatools_summary_string, args.settings);
-
-    //let rustatools_settings_string = format!(
-    //    "m-{}-s-{}-e-{}-z-{}-{}",
-    //    args.min_read_depth,
-    //    args.settings,
-    //    args.exclude_contig,
-    //    args.restrict_contig,
-    //    het_code
-    //);
 
     // Base output folder (phylorust_output by default)
     fs::create_dir_all(&args.output_dir).unwrap_or_else(|error|{
@@ -84,63 +76,91 @@ fn main() {
     let fasta = read_fasta::read_fasta(args.fasta_filename.clone(), &logger);
 
     // go through each VCF converting to summary files of reference and variant positions and bases
-    let mut global_sample_names: HashSet<String> = HashSet::new();
-    for name_type_location in &name_type_locations {
-        logger.information("──────────────────────────────");
+    //let mut global_sample_names: HashSet<String> = HashSet::new();
+    let global_sample_names = Arc::new(Mutex::new(HashSet::new()));
+    //for name_type_location in &name_type_locations {
+    logger.information("──────────────────────────────");
+    logger.information("Reading VCFs...");
 
-        // --- memory snapshot ---
-        mem_log("Memory in use before processing VCFs");
+    // Create a custom Rayon pool limited by CLI threads arg
+    let pool = ThreadPoolBuilder::new()
+        .num_threads(args.threads)
+        .build()
+        .unwrap();
 
-        // Output subfolder (phylorust/vcf_summaries/settings/vcf/)
-        let vcf_path = &name_type_location.location;
-        let vcf_filename = Path::new(vcf_path).file_name().expect("Failed to extract VCF filename").to_string_lossy().to_string();
-        let vcf_summary_subdir = format!("{}/{}", vcf_summary_dir, vcf_filename);
+    pool.install(|| {
+        name_type_locations.par_iter().for_each(|name_type_location| {
 
-        // Skip if already written
-        if Path::new(&vcf_summary_subdir).exists() {
-            logger.warning(&format!("Skipping genome/region output for {} — output folder already exist.", vcf_summary_subdir));
-            continue;
-        }
+            let logger = logger.clone();
+            
+            // Output subfolder (phylorust/vcf_summaries/settings/vcf/)
+            let vcf_path = &name_type_location.location;
+            let vcf_filename = Path::new(vcf_path).file_name().expect("Failed to extract VCF filename").to_string_lossy().to_string();
+            let vcf_summary_subdir = format!("{}/{}", vcf_summary_dir, vcf_filename);
 
-        // Read VCF
-        let entries = read_vcf::read_vcf(name_type_location, &logger, &mut global_sample_names, &args);
-        logger.information(&format!("{}: {} vcf positions parsed", name_type_location.location, entries.len()));
-        read_vcf::count_variants(&entries, &logger);
+            // Skip if already written
+            if Path::new(&vcf_summary_subdir).exists() {
+                let l = logger.lock().unwrap();
+                l.warning(&format!(
+                    "Skipping genome/region output for {} — output folder already exists.",
+                    vcf_summary_subdir
+                ));
+                return;
+            }
 
-        // Create VCF summary folder
-        fs::create_dir_all(&vcf_summary_subdir).unwrap_or_else(|error| {
-            logger.error(&format!("Could not create directory '{}': {}", vcf_summary_subdir, error));
-            std::process::exit(1);
-        });
+            // --- memory snapshot ---
+            //mem_log("Memory in use before processing VCFs");
 
-        // Convert 0->1 for reference, and 0->2 for snps etc. (all variants are now being written to files here. But refs kept for later)
-        let (sample_genomes, base_type_map) = genome_array::summarise_vcf_to_tab_files_and_genome_array(
-            &logger, 
-            &entries, 
-            &fasta, 
-            &vcf_summary_subdir, 
-            args.heterozygosity_encoding.as_str());
+            // Read VCF
+            let entries = read_vcf::read_vcf(
+                name_type_location, 
+                &mut global_sample_names.lock().unwrap(),
+                &args,
+                &logger);
+            {
+                let l = logger.lock().unwrap();
+                l.information(&format!("{}: {} VCF positions parsed", name_type_location.location, entries.len()));
+            }
+            read_vcf::count_variants(&entries, &logger.lock().unwrap());
 
-        // Print tab files for locations of 1s (reference) etc, per-sample summaries:
-        for (sample_name, contigs) in &sample_genomes {
-            for (base_type, code) in &base_type_map {
-                if base_type == "reference" || base_type == "ambiguous" {
+            // Summarize and write
+            let sample_genomes = genome_array::summarise_vcf_to_tab_files_and_genome_array(
+                &entries,
+                &fasta,
+                &vcf_summary_subdir,
+                &args,
+                &logger.lock().unwrap(),
+            );
+
+            // Write reference/ambiguous regions
+            for (sample_name, contigs) in &sample_genomes {
+                for base_type in ["reference", "ambiguous"] {
+                    let code = genome_array::code_for_base_type(base_type);
                     let outfile = format!("{}/{}-{}.tab", vcf_summary_subdir, base_type, sample_name);
-                    genome_array::write_regions_from_genome_array(contigs, *code, &fasta, sample_name, base_type, &outfile, &logger);
+                    genome_array::write_regions_from_genome_array(
+                        contigs, 
+                        code,
+                        &fasta, 
+                        sample_name, 
+                        base_type, 
+                        &outfile, 
+                        &logger
+                    );
                 }
             }
-        }
 
-        // drop entries
-        drop(entries);
-        drop(sample_genomes);
-        // Encourage allocator to release pages
-        #[cfg(target_os = "linux")]
-        {
-            unsafe { libc::malloc_trim(0); }
-        }
-        //mem_log("after drop(sample_genomes)");
-    }
+            // drop entries
+            drop(entries);
+            drop(sample_genomes);
+
+            // Encourage allocator to release pages
+            #[cfg(target_os = "linux")]
+            unsafe {
+                libc::malloc_trim(0);
+            }
+        });
+    });
+
     logger.information("──────────────────────────────");
 
     // Dynamically gather all .tab files from subdirectories
@@ -148,8 +168,8 @@ fn main() {
 
     // Load those into memory-efficient counters
     let (variant_counts, reference_counts) = join(
-        || read_genome_array_summary::load_contig_position_counts_parallel(&variant_paths, logger.clone()),
-        || read_genome_array_summary::load_contig_position_counts_parallel(&reference_paths, logger.clone()),
+        || read_genome_array_summary::load_contig_position_counts(&variant_paths, logger.clone()),
+        || read_genome_array_summary::load_contig_position_counts(&reference_paths, logger.clone()),
     );
 
     // gather all ref and variant sites:
@@ -180,7 +200,7 @@ fn main() {
         &logger);
 
     let histogram_file = format!("{}/site_coverage_histogram-{}.tsv", run_dir, rustatools_analysis_string);
-    utils::run_r_plotting_script(&histogram_file, &logger, args.percent_threshold, &run_dir);
+    utils::run_r_plotting_script(&histogram_file, args.percent_threshold, &run_dir, &logger);
 
     // Summarise 
     logger.information("──────────────────────────────");
@@ -237,7 +257,7 @@ fn main() {
     }
 }
 
-fn mem_log(label: &str) {
+/*fn mem_log(label: &str) {
     let mut sys = System::new_all();
     sys.refresh_processes();
     if let Ok(pid) = sysinfo::get_current_pid() {
@@ -254,16 +274,17 @@ fn mem_log(label: &str) {
         println!("{}: unable to get current PID", label);
     }
 }
+    */
 
 pub fn collect_tab_paths_by_settings(
     output_dir: &str,
     settings: u8,
-    logger: &Logger,
+    logger: &Arc<Mutex<Logger>>,
 ) -> (Vec<String>, Vec<String>) {
     let mut variant_paths = Vec::new();
     let mut reference_paths = Vec::new();
 
-    logger.information(&format!("Collecting .tab files from {}", output_dir));
+    logger.lock().unwrap().information(&format!("Collecting .tab files from {}", output_dir));
 
     for entry in fs::read_dir(output_dir).expect("Failed to read output_dir") {
         let path = entry.unwrap().path();
@@ -293,7 +314,7 @@ pub fn collect_tab_paths_by_settings(
         }
     }
 
-    logger.information(&format!(
+    logger.lock().unwrap().information(&format!(
         "Collected {} reference and {} variant tab files",
         reference_paths.len(),
         variant_paths.len()

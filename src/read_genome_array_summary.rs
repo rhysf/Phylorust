@@ -8,11 +8,10 @@ use crate::args::Args;
 use rayon::prelude::*;
 use std::sync::{Arc, Mutex};
 
-pub fn load_contig_position_counts_parallel(
+pub fn load_contig_position_counts(
     file_paths: &[String],
-    logger: Logger,
+    logger: Arc<Mutex<Logger>>,
 ) -> HashMap<String, HashMap<usize, usize>> {
-    let logger = Arc::new(Mutex::new(logger));
 
     file_paths
         .par_iter()
@@ -88,18 +87,18 @@ pub fn load_or_generate_histogram(
     rustatools_settings_string: &str,
     args: &Args, 
     rundir: &str,
-    logger: &Logger,
+    logger: &Arc<Mutex<Logger>>,
 ) -> HashMap<usize, Vec<(String, usize)>> {
 
     let outfile_path = format!("{}/site_coverage_histogram-{}.tsv", rundir, rustatools_settings_string);
-    logger.information(&format!("load_or_generate_histogram: Output file = '{}'", outfile_path));
+    logger.lock().unwrap().information(&format!("load_or_generate_histogram: Output file = '{}'", outfile_path));
 
     // Check if summary already exists
     if Path::new(&outfile_path).exists() {
-        logger.information(&format!("load_or_generate_histogram: Found existing histogram file '{}'. Loading instead of recalculating.", outfile_path));
-        let histogram_positions = load_histogram_positions_from_disk(&rundir, &rustatools_settings_string, logger);
-        let histogram = read_histogram_from_file(&outfile_path, logger);
-        visualize_variant_site_coverage(&histogram, &rustatools_settings_string, &rundir, logger);
+        logger.lock().unwrap().information(&format!("load_or_generate_histogram: Found existing histogram file '{}'. Loading instead of recalculating.", outfile_path));
+        let histogram_positions = load_histogram_positions_from_disk(&rundir, &rustatools_settings_string, &logger);
+        let histogram = read_histogram_from_file(&outfile_path, &logger);
+        visualize_variant_site_coverage(&histogram, &rustatools_settings_string, &rundir, &logger);
         return histogram_positions;
     }
 
@@ -112,7 +111,7 @@ pub fn load_or_generate_histogram(
         &rustatools_settings_string,
         args,
         &rundir,
-        logger,
+        &logger,
     )
 }
 
@@ -124,8 +123,9 @@ fn summarise_variant_site_coverage(
     rustatools_settings_string: &str,
     args: &Args,
     rundir: &str,
-    logger: &Logger) -> HashMap<usize, Vec<(String, usize)>> {
-    logger.information(&format!("summarise_variant_site_coverage: Flatten contig/pos to global position count across {} VCFs...", num_vcfs));
+    logger: &Arc<Mutex<Logger>>) -> HashMap<usize, Vec<(String, usize)>> {
+
+    logger.lock().unwrap().information(&format!("summarise_variant_site_coverage: Flatten contig/pos to global position count across {} VCFs...", num_vcfs));
 
     // Flatten contig/pos to global position count
     let mut position_to_count: HashMap<(String, usize), usize> = HashMap::new();
@@ -141,7 +141,7 @@ fn summarise_variant_site_coverage(
     }
 
     // Phase 1: Build site_to_bases (aggregate base observations across all samples)
-    logger.information(&format!("summarise_variant_site_coverage: Build site to bases aggregate across all samples..."));
+    logger.lock().unwrap().information(&format!("summarise_variant_site_coverage: Build site to bases aggregate across all samples..."));
     let mut site_to_bases: HashMap<(String, usize), HashSet<char>> = HashMap::new();
 
     for (_, base_map) in sample_bases {
@@ -154,7 +154,7 @@ fn summarise_variant_site_coverage(
     }
 
     // Phase 2: Compute histogram over informative sites only
-    logger.information(&format!("summarise_variant_site_coverage: Compute histogram..."));
+    logger.lock().unwrap().information(&format!("summarise_variant_site_coverage: Compute histogram..."));
     let results: Vec<(usize, usize, Vec<(String, usize)>, usize)> = (1u32..=100)
         .collect::<Vec<_>>()
         .into_par_iter()
@@ -213,7 +213,7 @@ fn summarise_variant_site_coverage(
 
     // Output skipped invariant count
     if !args.include_invariants && skipped_invariant_sites > 0 {
-        logger.output(&format!(
+        logger.lock().unwrap().output(&format!(
             "\nNote: {} invariant-only positions were skipped (use --include_invariants to include them)",
             skipped_invariant_sites
         ));
@@ -226,13 +226,13 @@ fn visualize_variant_site_coverage(
     histogram: &Vec<(usize, usize)>, 
     rustatools_settings_string: &str,
     rundir: &str, 
-    logger: &Logger) {
-    logger.output("visualize_variant_site_coverage: ASCII Plot...");
+    logger: &Arc<Mutex<Logger>>) {
+    logger.lock().unwrap().output("visualize_variant_site_coverage: ASCII Plot...");
 
     // Find max value safely
     let max_val = histogram.first().map(|(_, v)| *v).unwrap_or(1) as f64;
     if max_val <= 0.0 {
-        logger.warning("Histogram counts are all zero, skipping ASCII plot.");
+        logger.lock().unwrap().warning("Histogram counts are all zero, skipping ASCII plot.");
         return;
     }
 
@@ -243,7 +243,7 @@ fn visualize_variant_site_coverage(
 
             // Cap at 200 characters to prevent runaway allocation
             if bar_len > 200 {
-                logger.warning(&format!(
+                logger.lock().unwrap().warning(&format!(
                     "Bar length too large ({}), capping at 200 (percent={}, count={}, max_val={})",
                     bar_len, percent, count, max_val
                 ));
@@ -251,7 +251,7 @@ fn visualize_variant_site_coverage(
             }
 
             let bar = "▇".repeat(bar_len);
-            logger.output(&format!("{:>3}% | {:>6} | {}", percent, count, bar));
+            logger.lock().unwrap().output(&format!("{:>3}% | {:>6} | {}", percent, count, bar));
         }
     }
 
@@ -260,12 +260,12 @@ fn visualize_variant_site_coverage(
 
     // Skip writing if file exists
     if Path::new(&outfile_path).exists() {
-        logger.warning(&format!("Histogram file '{}' already exists — skipping write.", outfile_path));
+        logger.lock().unwrap().warning(&format!("Histogram file '{}' already exists — skipping write.", outfile_path));
         return;
     }
 
     let file = File::create(&outfile_path).unwrap_or_else(|e| {
-        logger.error(&format!("Could not create histogram file '{}': {}", outfile_path, e));
+        logger.lock().unwrap().error(&format!("Could not create histogram file '{}': {}", outfile_path, e));
         std::process::exit(1);
     });
 
@@ -274,7 +274,7 @@ fn visualize_variant_site_coverage(
     for (percent, count) in histogram {
         writeln!(writer, "{}\t{}", percent, count).unwrap();
     }
-    logger.output(&format!("Saved histogram to: {}\n", outfile_path));
+    logger.lock().unwrap().output(&format!("Saved histogram to: {}\n", outfile_path));
 }
 
 /// Writes position files for each % threshold (1-100) into a subfolder.
@@ -282,14 +282,14 @@ pub fn write_site_position_files(
     histogram_positions: &HashMap<usize, Vec<(String, usize)>>, 
     output_dir: &str, 
     settings_str: &str,
-    logger: &Logger) {
+    logger: &Arc<Mutex<Logger>>) {
 
     let summary_dir = Path::new(output_dir).join(format!("site_positions-{}", settings_str));
-    logger.information("write_site_position_files: summary_dir");
+    logger.lock().unwrap().information("write_site_position_files: summary_dir");
 
     // Avoid re-generating if already exists
     if summary_dir.exists() {
-        logger.warning("Site position subfolder already exists. Skipping generation of tab files.");
+        logger.lock().unwrap().warning("Site position subfolder already exists. Skipping generation of tab files.");
         return;
     } else {
         fs::create_dir_all(&summary_dir).expect("Failed to create site_position_files folder");
@@ -300,7 +300,7 @@ pub fn write_site_position_files(
 
         // Skip if file already exists
         if file_path.exists() {
-            logger.warning(&format!("File already exists for percent {} — skipping.", percent));
+            logger.lock().unwrap().warning(&format!("File already exists for percent {} — skipping.", percent));
             continue;
         }
 
@@ -321,13 +321,13 @@ pub fn write_site_position_files(
             }
         }
     }
-    logger.output("All site position files written to site_position_files/");
+    logger.lock().unwrap().output("All site position files written to site_position_files/");
 }
 
 fn load_histogram_positions_from_disk(
     output_dir: &str,
     settings_str: &str,
-    logger: &Logger
+    logger: &Arc<Mutex<Logger>>
 ) -> HashMap<usize, Vec<(String, usize)>> {
     let mut histogram_positions: HashMap<usize, Vec<(String, usize)>> = HashMap::new();
     let site_dir = format!("{}/site_positions-{}", output_dir, settings_str);
@@ -335,7 +335,7 @@ fn load_histogram_positions_from_disk(
     for percent in 1..=100 {
         let file_path = format!("{}/percent_{}.tab", site_dir, percent);
         if !Path::new(&file_path).exists() {
-            logger.warning(&format!("Missing file '{}'; skipping.", file_path));
+            logger.lock().unwrap().warning(&format!("Missing file '{}'; skipping.", file_path));
             continue;
         }
 
@@ -353,14 +353,14 @@ fn load_histogram_positions_from_disk(
         }
     }
 
-    logger.information("Histogram positions loaded from disk.");
+    logger.lock().unwrap().information("Histogram positions loaded from disk.");
     histogram_positions
 }
 
 /// Read the histogram TSV (Percent_VCFs\tNum_Sites) from file into a Vec
-pub fn read_histogram_from_file(path: &str, logger: &Logger) -> Vec<(usize, usize)> {
+pub fn read_histogram_from_file(path: &str, logger: &Arc<Mutex<Logger>>) -> Vec<(usize, usize)> {
     let file = File::open(path).unwrap_or_else(|e| {
-        logger.error(&format!("Failed to open histogram file '{}': {}", path, e));
+        logger.lock().unwrap().error(&format!("Failed to open histogram file '{}': {}", path, e));
         std::process::exit(1);
     });
 
@@ -371,24 +371,24 @@ pub fn read_histogram_from_file(path: &str, logger: &Logger) -> Vec<(usize, usiz
         let line = match line {
             Ok(l) => l,
             Err(e) => {
-                logger.warning(&format!("Error reading line in '{}': {}", path, e));
+                logger.lock().unwrap().warning(&format!("Error reading line in '{}': {}", path, e));
                 continue;
             }
         };
 
         let parts: Vec<&str> = line.trim().split('\t').collect();
         if parts.len() != 2 {
-            logger.warning(&format!("Invalid histogram line: '{}'", line));
+            logger.lock().unwrap().warning(&format!("Invalid histogram line: '{}'", line));
             continue;
         }
 
         let percent = parts[0].parse::<usize>().unwrap_or_else(|_| {
-            logger.warning(&format!("Invalid percent in line: '{}'", line));
+            logger.lock().unwrap().warning(&format!("Invalid percent in line: '{}'", line));
             0
         });
 
         let count = parts[1].parse::<usize>().unwrap_or_else(|_| {
-            logger.warning(&format!("Invalid count in line: '{}'", line));
+            logger.lock().unwrap().warning(&format!("Invalid count in line: '{}'", line));
             0
         });
 

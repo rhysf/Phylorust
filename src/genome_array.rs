@@ -3,156 +3,158 @@ use crate::read_fasta::Fasta;
 use crate::read_vcf::VCFEntry;
 use crate::utils::ensure_contig_header;
 use crate::utils::iupac_code;
+use crate::args::Args;
+
 use std::collections::{HashMap, HashSet};
-use std::fs::File;
+use std::fs::{self, File};
 use std::io::{BufWriter, Write};
+use std::sync::{Arc, Mutex};
+
+// Use 0 only as "unset"
+pub const CODE_UNSET:        u8 = 0;
+pub const CODE_REFERENCE:    u8 = 1;
+pub const CODE_SNP:          u8 = 2;
+pub const CODE_INSERTION:    u8 = 3;
+pub const CODE_DELETION:     u8 = 4;
+pub const CODE_AMBIGUOUS:    u8 = 5;
+pub const CODE_HET:          u8 = 6;
+pub const CODE_HET_INS:      u8 = 7;
+pub const CODE_HET_DEL:      u8 = 8;
+
+#[inline]
+pub fn code_for_base_type(bt: &str) -> u8 {
+    match bt {
+        "reference"      => CODE_REFERENCE,
+        "snp"            => CODE_SNP,
+        "insertion"      => CODE_INSERTION,
+        "deletion"       => CODE_DELETION,
+        "ambiguous"      => CODE_AMBIGUOUS,
+        "heterozygous"   => CODE_HET,
+        "het_insertion"  => CODE_HET_INS,
+        "het_deletion"   => CODE_HET_DEL,
+        _                => CODE_UNSET,
+    }
+}
 
 pub fn summarise_vcf_to_tab_files_and_genome_array(
-    logger: &Logger, 
-    entries: &Vec<VCFEntry>, 
-    fasta: &Vec<Fasta>, 
+    entries: &[VCFEntry],
+    fasta: &[Fasta],
     vcf_summary_subdir: &str,
-    heterozygosity_encoding: &str) -> (
-        HashMap<String, HashMap<String, Vec<u8>>>, // sample → contig → array
-        HashMap<String, u8>,                        // base_type → code{
-    ) {
+    args: &Args,
+    logger: &Logger) -> HashMap<String, HashMap<String, Vec<u8>>> {
 
-    logger.information("summarise_vcf_to_tab_files_and_genome_array: filling genome arrays for each sample...");
+    logger.information(&format!(
+        "summarise_vcf_to_tab_files_and_genome_array: {} ({} entries)",
+        vcf_summary_subdir,
+        entries.len(),
+    ));
 
-    // sample_name → (contig → Vec<u8>)
-    let mut sample_genomes: HashMap<String, HashMap<String, Vec<u8>>> = HashMap::new();
+    // 1. Setup output directory
+    fs::create_dir_all(&vcf_summary_subdir).unwrap_or_else(|error| {
+        logger.error(&format!("Could not create directory '{}': {}", vcf_summary_subdir, error));
+        std::process::exit(1);
+    });
 
-    // base_type → numeric code
-    let mut type_to_code: HashMap<String, u8> = HashMap::new();
-    let mut next_code: u8 = 1;
-
-    // --- NEW: prepare per-base-type writers ---
+    // 2. Setup writer structures
     let mut base_type_writers: HashMap<(String, String), BufWriter<File>> = HashMap::new();
-    let mut last_contig_written: HashMap<(String, String), String> = HashMap::new();
     let mut written_contigs: HashSet<(String, String, String)> = HashSet::new();
 
-    // Pre-initialize arrays for all samples & contigs
+    // 3. Pre-build sample genomes
+    let mut sample_genomes: HashMap<String, HashMap<String, Vec<u8>>> = HashMap::new();
     for entry in entries {
         for sample_name in entry.samples_to_base_type.keys() {
             sample_genomes.entry(sample_name.clone()).or_insert_with(|| {
-                let mut contigs = HashMap::new();
-                for f in fasta {
-                    contigs.insert(f.id.clone(), vec![0u8; f.seq.len()]);
-                }
-                contigs
+                fasta.iter()
+                    .map(|f| (f.id.clone(), vec![0u8; f.seq.len()]))
+                    .collect()
             });
         }
     }
 
-    // Fill arrays with variant codes
+    // 4. Process all variants (batched I/O, fewer lookups)
+    //let mut counters: HashMap<String, usize> = HashMap::new();
+
     for entry in entries {
         let contig = &entry.contig;
         let pos = entry.position - 1; // convert from 1-based to 0-based
 
         for (sample_name, base_type) in &entry.samples_to_base_type {
-            // Dynamically assign numeric codes to new base types
-            let code = *type_to_code.entry(base_type.clone()).or_insert_with(|| {
-                let c = next_code;
-                next_code += 1;
-                c
-            });
-
-            // --- NEW: Handle variants with true ALT bases ---
-            match base_type.as_str() {
-                "reference" | "ambiguous" => {
-                    // We'll handle these later via contiguous-region detection
+            // --- Handle reference & ambiguous bases ---
+            if base_type == "reference" || base_type == "ambiguous" {
+                // Assign numeric code for ref/ambiguous (0 = uninitialised, 1 = ref, 4 = amb)
+                let code = code_for_base_type(base_type);
+                if let Some(contigs) = sample_genomes.get_mut(sample_name) {
+                    if let Some(array) = contigs.get_mut(contig) {
+                        if pos < array.len() {
+                            array[pos] = code;
+                        }
+                    }
                 }
-                _ => {
-                    write_variant_entry(
-                        &mut base_type_writers,
-                        &mut last_contig_written,
-                        &mut written_contigs,
-                        logger,
-                        sample_name,
-                        base_type,
-                        &entry.contig,
-                        entry,
-                        heterozygosity_encoding,
-                        vcf_summary_subdir,
-                    );
-                }
+                continue; // don't write .tab file entry for these
             }
 
-            // --- Continue marking the genome array as before ---
+            let code = code_for_base_type(base_type);
 
-            // Write code into the appropriate sample + contig + position
+            // --- open writer lazily ---
+            let key = (sample_name.clone(), base_type.clone());
+            let writer = base_type_writers.entry(key.clone()).or_insert_with(|| {
+                let path = format!("{}/{}-{}.tab", vcf_summary_subdir, base_type, sample_name);
+                let file = File::create(&path).unwrap_or_else(|e| {
+                    logger.error(&format!("Could not create '{}': {}", path, e));
+                    std::process::exit(1);
+                });
+                BufWriter::new(file)
+            });
+
+            // --- header check ---
+            ensure_contig_header(writer, &mut written_contigs, sample_name, base_type, contig);
+
+            // --- write the variant row ---
+            let (start, stop, bases_string) = make_variant_tab_row(
+                entry,
+                sample_name,
+                base_type,
+                args.heterozygosity_encoding.as_str(),
+            );
+            writeln!(writer, "{}\t{}\t{}", start, stop, bases_string).ok();
+
+            // --- write numeric code to genome array ---
             if let Some(contigs) = sample_genomes.get_mut(sample_name) {
                 if let Some(array) = contigs.get_mut(contig) {
                     if pos < array.len() {
                         array[pos] = code;
-                    } else {
-                        logger.warning(&format!(
-                            "Position {} out of bounds for contig '{}' (len={})",
-                            pos, contig, array.len()
-                        ));
                     }
                 }
             }
+
+            //*counters.entry(base_type.clone()).or_insert(0) += 1;
         }
     }
 
-    // --- Flush all open variant writers ---
-    for ((_sample, _btype), mut writer) in base_type_writers {
-        writer.flush().ok();
-    }
-
     // Log summary
-    logger.information(&format!(
-        "summarise_vcf_to_tab_files_and_genome_array: processed {} entries, {} base types, {} samples.",
-        entries.len(),
-        type_to_code.len(),
-        sample_genomes.len()
-    ));
-
-    //for (t, c) in &type_to_code {
-    //    logger.information(&format!("  code {:>2} → {}", c, t));
+    // --- 6. Summarize ---
+    //logger.information("Variant writing complete. Summary:");
+    //for (bt, count) in &counters {
+    //    logger.information(&format!("  {}: {}", bt, count));
     //}
 
-    (sample_genomes, type_to_code)
+    sample_genomes
 }
 
-fn write_variant_entry(
-    base_type_writers: &mut HashMap<(String, String), BufWriter<File>>,
-    last_contig_written: &mut HashMap<(String, String), String>,
-    written_contigs: &mut HashSet<(String, String, String)>,
-    logger: &Logger,
+fn make_variant_tab_row(
+    entry: &VCFEntry,
     sample_name: &str,
     base_type: &str,
-    contig: &str,
-    entry: &VCFEntry,
     heterozygosity_encoding: &str,
-    vcf_summary_subdir: &str,) {
-
-    // 1) Get (or open) writer
-    let key = (sample_name.to_string(), base_type.to_string());
-    let writer = base_type_writers.entry(key.clone()).or_insert_with(|| {
-        let path = format!("{}/{}-{}.tab", vcf_summary_subdir, base_type, sample_name);
-        let file = File::create(&path).unwrap_or_else(|e| {
-            logger.error(&format!("Could not create '{}': {}", path, e));
-            std::process::exit(1);
-        });
-        BufWriter::new(file)
-    });
-
-    // 2) contig header once per (sample,base_type,contig)
-    if last_contig_written.get(&key) != Some(&contig.to_string()) {
-        ensure_contig_header(writer, written_contigs, sample_name, base_type, contig);
-        last_contig_written.insert(key.clone(), contig.to_string());
-    }
-
-    // 3) compute span (1-based inclusive)
+) -> (usize, usize, String) {
+    // Compute start/stop range (1-based inclusive)
     let ref_len = entry.ref_base.len().max(1);
     let start = entry.position;
     let stop = entry.position + ref_len - 1;
 
-    // 4) bases string per type
+    // Build sequence string depending on variant type
     let bases_string = match base_type {
-        // Homozygous SNP
+        // --- Homozygous SNP ---
         "snp" => {
             entry.samples_to_base1
                 .get(sample_name)
@@ -160,33 +162,31 @@ fn write_variant_entry(
                 .unwrap_or_else(|| entry.alt_base.clone())
         }
 
-        // Heterozygous SNP — use base2 (or optionally compute IUPAC later)
-        "heterozygous" => {
-            match heterozygosity_encoding {
-                "iupac" => {
-                    let ref_base = entry
-                        .samples_to_base1
-                        .get(sample_name)
-                        .and_then(|s| s.chars().next())
-                        .unwrap_or('N');
-                    let alt_base = entry
-                        .samples_to_base2
-                        .get(sample_name)
-                        .and_then(|s| s.chars().next())
-                        .unwrap_or('N');
-                    iupac_code(ref_base, alt_base).to_string()
-                }
-                _ => {
-                    // "alt" mode — simply return the alt base
-                    entry.samples_to_base2
-                        .get(sample_name)
-                        .cloned()
-                        .unwrap_or_else(|| entry.alt_base.clone())
-                }
+        // --- Heterozygous SNP ---
+        "heterozygous" => match heterozygosity_encoding {
+            "iupac" => {
+                let ref_base = entry
+                    .samples_to_base1
+                    .get(sample_name)
+                    .and_then(|s| s.chars().next())
+                    .unwrap_or('N');
+                let alt_base = entry
+                    .samples_to_base2
+                    .get(sample_name)
+                    .and_then(|s| s.chars().next())
+                    .unwrap_or('N');
+                iupac_code(ref_base, alt_base).to_string()
             }
-        }
+            _ => {
+                // Default "alt" mode
+                entry.samples_to_base2
+                    .get(sample_name)
+                    .cloned()
+                    .unwrap_or_else(|| entry.alt_base.clone())
+            }
+        },
 
-        // Homozygous insertion — inserted bases after anchor
+        // --- Homozygous insertion ---
         "insertion" => {
             entry.samples_to_base1
                 .get(sample_name)
@@ -194,7 +194,7 @@ fn write_variant_entry(
                 .unwrap_or_else(|| entry.alt_base.clone())
         }
 
-        // Heterozygous insertion — the other allele’s inserted bases
+        // --- Heterozygous insertion ---
         "het_insertion" => {
             entry.samples_to_base2
                 .get(sample_name)
@@ -202,9 +202,8 @@ fn write_variant_entry(
                 .unwrap_or_else(|| entry.alt_base.clone())
         }
 
-        // Homozygous deletion — anchor + '-' padding
+        // --- Homozygous deletion ---
         "deletion" => {
-            let ref_len = entry.ref_base.len();
             let anchor = entry
                 .samples_to_base1
                 .get(sample_name)
@@ -213,9 +212,8 @@ fn write_variant_entry(
             format!("{}{}", anchor, "-".repeat(ref_len.saturating_sub(1)))
         }
 
-        // Heterozygous deletion — base2 + '-' padding
+        // --- Heterozygous deletion ---
         "het_deletion" => {
-            let ref_len = entry.ref_base.len();
             let anchor = entry
                 .samples_to_base2
                 .get(sample_name)
@@ -227,8 +225,7 @@ fn write_variant_entry(
         _ => String::new(),
     };
 
-    // 5) write line
-    writeln!(writer, "{}\t{}\t{}", start, stop, bases_string).ok();
+    (start, stop, bases_string)
 }
 
 /// Writes contiguous genomic regions of a given base-type value, with bases as the 3rd column.
@@ -245,13 +242,13 @@ pub fn write_regions_from_genome_array(
     sample_name: &str,
     base_type: &str,
     outfile_path: &str,
-    logger: &Logger,
+    logger: &Arc<Mutex<Logger>>
 ) {
 
-    logger.information(&format!("write_regions_from_genome_array: finding contiguous regions for value {}...", find_value));
+    logger.lock().unwrap().information(&format!("write_regions_from_genome_array: finding contiguous regions for value {}...", find_value));
 
     let file = File::create(outfile_path).unwrap_or_else(|e| {
-        logger.error(&format!("Could not create file '{}': {}", outfile_path, e));
+        logger.lock().unwrap().error(&format!("Could not create file '{}': {}", outfile_path, e));
         std::process::exit(1);
     });
     let mut writer = BufWriter::new(file);
@@ -304,5 +301,5 @@ pub fn write_regions_from_genome_array(
     }
 
     // "write_regions_from_genome_array: wrote {} regions covering {} bases to {}", count_regions, count_bases, outfile_path
-    logger.information(&format!("write_regions_from_genome_array: wrote {} regions covering {} bases", count_regions, count_bases));
+    logger.lock().unwrap().information(&format!("write_regions_from_genome_array: wrote {} regions covering {} bases", count_regions, count_bases));
 }

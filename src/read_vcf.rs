@@ -4,6 +4,7 @@ use crate::args::Args;
 use std::fs::{self};
 use std::process;
 use std::collections::{HashMap, HashSet};
+use std::sync::{Arc, Mutex};
 
 pub struct VCFsamples {
     //header:String,
@@ -28,15 +29,17 @@ pub struct VCFEntry {
     pub samples_to_base_type:HashMap<String, String>,
 }
 
-pub fn read_vcf(name_type_location : &NameTypeLocation, 
-    logger : &Logger, 
+pub fn read_vcf(
+    name_type_location : &NameTypeLocation, 
     global_sample_names: &mut HashSet<String>, 
-    args: &Args) -> Vec<VCFEntry> {
-    logger.information(&format!("read VCF: {}", name_type_location.location));
+    args: &Args,
+    logger: &Arc<Mutex<Logger>>, ) -> Vec<VCFEntry> {
+
+    logger.lock().unwrap().information(&format!("read VCF: {}", name_type_location.location));
 
     // read file
     let vcf_file = fs::read_to_string(&name_type_location.location).unwrap_or_else(|error|{
-        logger.error(&format!("Error with file: {} {}", name_type_location.location, error));
+        logger.lock().unwrap().error(&format!("Error with file: {} {}", name_type_location.location, error));
         process::exit(1);
     });
 
@@ -55,7 +58,7 @@ pub fn read_vcf(name_type_location : &NameTypeLocation,
 
             let line_parts : Vec<&str> = line.split('\t').collect();
             if line_parts.len() < 10 {
-                logger.error("VCF header line does not contain sample columns.");
+                logger.lock().unwrap().error("VCF header line does not contain sample columns.");
                 process::exit(1);
             }
             let mut sample_names = HashMap::new();
@@ -74,7 +77,7 @@ pub fn read_vcf(name_type_location : &NameTypeLocation,
                         counter += 1;
                     }
 
-                    logger.warning(&format!(
+                    logger.lock().unwrap().warning(&format!(
                         "Duplicate sample name detected: Sample '{}' renamed to '{}'.",
                         original, sample_name
                     ));
@@ -95,7 +98,7 @@ pub fn read_vcf(name_type_location : &NameTypeLocation,
         let vcf_samples_ref = match vcf_samples.as_ref() {
             Some(samples) => samples,
             None => {
-                logger.error("read_vcf: VCF header line missing.");
+                logger.lock().unwrap().error("read_vcf: VCF header line missing.");
                 process::exit(1);
             }
         };
@@ -107,12 +110,12 @@ pub fn read_vcf(name_type_location : &NameTypeLocation,
     vcf_entries
 }
 
-fn read_vcf_line(line : &str, args: &Args, logger : &Logger, samples: &VCFsamples) -> Option<VCFEntry> {
+fn read_vcf_line(line : &str, args: &Args, logger: &Arc<Mutex<Logger>>, samples: &VCFsamples) -> Option<VCFEntry> {
 
     let line_parts : Vec<&str> = line.split('\t').collect();
     let contig = line_parts[0].to_string();
     let position: usize = line_parts[1].parse::<usize>().unwrap_or_else(|_| {
-        logger.warning(&format!("Invalid position value in VCF: '{}'", line_parts[1]));
+        logger.lock().unwrap().warning(&format!("Invalid position value in VCF: '{}'", line_parts[1]));
         process::exit(1);
     });
     //let id = line_parts[2].to_string();
@@ -125,7 +128,7 @@ fn read_vcf_line(line : &str, args: &Args, logger : &Logger, samples: &VCFsample
 
     // Initial quality check
     if line_parts.len() < 9 {
-        logger.error(&format!("Error with vcf line: {}", line));
+        logger.lock().unwrap().error(&format!("Error with vcf line: {}", line));
         process::exit(1);
     }
 
@@ -147,7 +150,12 @@ fn read_vcf_line(line : &str, args: &Args, logger : &Logger, samples: &VCFsample
     let sample_to_depth = create_sample_to_depth(&line_parts[9..], md_index_opt, &samples.samples, args.min_read_depth);
 
     // Determine what base it is
-    let (mut samples_to_base1, mut samples_to_base2, mut samples_to_base_type) = determine_bases_and_base_type(&samples_to_genotype, &ref_base, &alt_base, &logger);
+    let (mut samples_to_base1, mut samples_to_base2, mut samples_to_base_type) = determine_bases_and_base_type(
+        &samples_to_genotype, 
+        &ref_base, 
+        &alt_base, 
+        &logger
+    );
 
     // Filter by min depth
     let proceed = filter_samples_by_min_depth(
@@ -180,7 +188,7 @@ fn read_vcf_line(line : &str, args: &Args, logger : &Logger, samples: &VCFsample
     })
 }
 
-fn read_genotype_and_depth_positions(format : &str, logger : &Logger) -> (usize, Option<usize>) {
+fn read_genotype_and_depth_positions(format : &str, logger: &Arc<Mutex<Logger>>) -> (usize, Option<usize>) {
     
     let format_parts : Vec<&str> = format.split(':').collect();
 
@@ -199,7 +207,7 @@ fn read_genotype_and_depth_positions(format : &str, logger : &Logger) -> (usize,
     if let Some(gt_idx) = gt_index {
         (gt_idx, dp_index)
     } else {
-        logger.error(&format!("Error with vcf line (no genotype found): {}", format));
+        logger.lock().unwrap().error(&format!("Error with vcf line (no genotype found): {}", format));
         process::exit(1);
     }
 }
@@ -294,7 +302,12 @@ fn filter_samples_by_min_depth(
     true
 }
 
-fn determine_bases_and_base_type(samples_to_genotype: &HashMap<String, String>, ref_base : &String, alt_base : &String, logger : &Logger) -> (HashMap<String, String>, HashMap<String, String>, HashMap<String, String>) {
+fn determine_bases_and_base_type(
+    samples_to_genotype: &HashMap<String, String>, 
+    ref_base : &String, 
+    alt_base : &String, 
+    logger: &Arc<Mutex<Logger>>
+) -> (HashMap<String, String>, HashMap<String, String>, HashMap<String, String>) {
     let mut sample_to_base1 = HashMap::new();
     let mut sample_to_base2 = HashMap::new();
     let mut sample_to_base_type = HashMap::new();
@@ -310,14 +323,14 @@ fn determine_bases_and_base_type(samples_to_genotype: &HashMap<String, String>, 
     (sample_to_base1, sample_to_base2, sample_to_base_type)
 }
 
-fn determine_bases_and_base_type_single_sample(genotype: &String, ref_base : &String, alt_base : &String, logger : &Logger) -> (String, String, String) {
+fn determine_bases_and_base_type_single_sample(genotype: &String, ref_base : &String, alt_base : &String, logger: &Arc<Mutex<Logger>>) -> (String, String, String) {
 
     // Save bases and GT parts
     let consensus_bases : Vec<&str> = alt_base.split(',').collect();
     let mut all_bases = vec![ref_base.as_str()];
     all_bases.extend(consensus_bases.iter().cloned());
 
-    //logger.warning("determine_bases_and_base_type_single_sample");
+    //logger.lock().unwrap().warning("determine_bases_and_base_type_single_sample");
 
     let gt_parts : Vec<&str> = genotype.split(|c| c == '/' || c == '|').collect();
     let mut gt_bases : Vec<&str> = Vec::new();
@@ -333,7 +346,7 @@ fn determine_bases_and_base_type_single_sample(genotype: &String, ref_base : &St
 
         // Validate index range
         if all_bases.len() <= n {
-            logger.error(&format!("vcf parsing genotype error: No {} defined from ref {} and cons {}", n, ref_base, alt_base));
+            logger.lock().unwrap().error(&format!("vcf parsing genotype error: No {} defined from ref {} and cons {}", n, ref_base, alt_base));
             process::exit(1);
         }
 
@@ -431,11 +444,11 @@ fn determine_bases_and_base_type_single_sample(genotype: &String, ref_base : &St
 
     // polyploid?
     if gt_bases.len() > 2 {
-        logger.error(&format!("polyploid not implemented currently: {}", genotype));
+        logger.lock().unwrap().error(&format!("polyploid not implemented currently: {}", genotype));
         process::exit(1);
     }
 
-    logger.error(&format!("Unexpected genotype: {}", genotype));
+    logger.lock().unwrap().error(&format!("Unexpected genotype: {}", genotype));
     process::exit(1);
 }
 
