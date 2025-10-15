@@ -24,18 +24,27 @@ fn main() {
     let logger = Logger;
 
     // Settings
-    let het_code = match args.heterozygosity_encoding.as_str() {
-        "iupac" => "h-i",
-        _ => "h-a",
-    };
-    let rustatools_settings_string = format!(
-        "m-{}-s-{}-e-{}-z-{}-{}",
+    //let het_code = match args.heterozygosity_encoding.as_str() {
+    //    "iupac" => "h-i",
+    //    _ => "h-a",
+    //};
+    let rustatools_summary_string = format!("m-{}-e-{}-z-{}-h-{}",
         args.min_read_depth,
-        args.settings,
         args.exclude_contig,
         args.restrict_contig,
-        het_code
+        args.heterozygosity_encoding
     );
+
+    let rustatools_analysis_string = format!("{}-s-{}", rustatools_summary_string, args.settings);
+
+    //let rustatools_settings_string = format!(
+    //    "m-{}-s-{}-e-{}-z-{}-{}",
+    //    args.min_read_depth,
+    //    args.settings,
+    //    args.exclude_contig,
+    //    args.restrict_contig,
+    //    het_code
+    //);
 
     // Base output folder (phylorust_output by default)
     fs::create_dir_all(&args.output_dir).unwrap_or_else(|error|{
@@ -44,7 +53,7 @@ fn main() {
     });
 
     // VCF summaries folder (shared across runs)
-    let vcf_summary_dir = format!("{}/vcf_summaries/{}", args.output_dir, rustatools_settings_string);
+    let vcf_summary_dir = format!("{}/vcf_summaries/{}", args.output_dir, rustatools_summary_string);
     fs::create_dir_all(&vcf_summary_dir).unwrap_or_else(|error| {
         logger.error(&format!("Error with VCF summaries directory: {}", error));
         process::exit(1);
@@ -104,7 +113,12 @@ fn main() {
         });
 
         // Convert 0->1 for reference, and 0->2 for snps etc. (all variants are now being written to files here. But refs kept for later)
-        let (sample_genomes, base_type_map) = genome_array::fill_genome_hash_array_from_vcf(&logger, &entries, &fasta, &vcf_summary_subdir, args.heterozygosity_encoding.as_str());
+        let (sample_genomes, base_type_map) = genome_array::fill_genome_hash_array_from_vcf(
+            &logger, 
+            &entries, 
+            &fasta, 
+            &vcf_summary_subdir, 
+            args.heterozygosity_encoding.as_str());
 
         // Print tab files for locations of 1s (reference) etc, per-sample summaries:
         for (sample_name, contigs) in &sample_genomes {
@@ -143,16 +157,16 @@ fn main() {
         &reference_counts, 
         &variant_paths, 
         name_type_locations.len(), 
-        &rustatools_settings_string, 
+        &rustatools_analysis_string, 
         &args, 
         &run_dir, 
         &logger);
-    let histogram_file = format!("{}/site_coverage_histogram-{}.tsv", run_dir, rustatools_settings_string);
+    let histogram_file = format!("{}/site_coverage_histogram-{}.tsv", run_dir, rustatools_analysis_string);
     utils::run_r_plotting_script(&histogram_file, &logger, args.percent_threshold, &run_dir);
 
     // Summarise 
     logger.information("──────────────────────────────");
-    read_genome_array_summary::write_site_position_files(&histogram_positions, &run_dir, &rustatools_settings_string, &logger);
+    read_genome_array_summary::write_site_position_files(&histogram_positions, &run_dir, &rustatools_analysis_string, &logger);
 
     // Determine which percentiles to generate FASTAs for
     let percentiles_to_generate: Vec<usize> = if args.generate_fastas == "all" {
@@ -199,7 +213,7 @@ fn main() {
             &fasta,
             &sample_bases_cache,
             &run_dir,
-            &rustatools_settings_string,
+            &rustatools_analysis_string,
             &logger,
         );
     }
@@ -209,7 +223,7 @@ fn main() {
         utils::run_fasttree_on_fastas(
             &run_dir,
             &percentiles_to_generate,
-            &rustatools_settings_string,
+            &rustatools_analysis_string,
             &logger,
             args.fasttree_bin.as_deref(),
         );
