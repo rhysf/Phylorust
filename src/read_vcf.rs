@@ -15,8 +15,8 @@ pub struct VCFEntry {
     pub contig:String,
     pub position:usize,
     //pub id:String,
-    //pub ref_base:String,
-    //pub alt_base:String,
+    pub ref_base:String,
+    pub alt_base:String,
     //pub cons_qual:String,
     //pub filter:String,
     //pub info:String,
@@ -24,7 +24,7 @@ pub struct VCFEntry {
     //pub samples:HashMap<usize, String>,
     //pub samples_to_genotype:HashMap<String, String>,
     pub samples_to_base1:HashMap<String, String>,
-    //pub samples_to_base2:HashMap<String, String>,
+    pub samples_to_base2:HashMap<String, String>,
     pub samples_to_base_type:HashMap<String, String>,
 }
 
@@ -115,7 +115,6 @@ fn read_vcf_line(line : &str, args: &Args, logger : &Logger, samples: &VCFsample
         logger.warning(&format!("Invalid position value in VCF: '{}'", line_parts[1]));
         process::exit(1);
     });
-    //let position = line_parts[1];
     //let id = line_parts[2].to_string();
     let ref_base = line_parts[3].to_string();
     let alt_base = line_parts[4].to_string();
@@ -167,8 +166,8 @@ fn read_vcf_line(line : &str, args: &Args, logger : &Logger, samples: &VCFsample
         contig,
         position,
         //id,
-        //ref_base,
-        //alt_base,
+        ref_base,
+        alt_base,
         //cons_qual,
         //filter,
         //info,
@@ -176,7 +175,7 @@ fn read_vcf_line(line : &str, args: &Args, logger : &Logger, samples: &VCFsample
         //samples:sample_names,
         //samples_to_genotype,
         samples_to_base1,
-        //samples_to_base2,
+        samples_to_base2,
         samples_to_base_type,
     })
 }
@@ -328,7 +327,7 @@ fn determine_bases_and_base_type_single_sample(genotype: &String, ref_base : &St
         let n = match gt_part.parse::<usize>() {
             Ok(n) => n,
             Err(_) => {
-                return ("N".to_string(), "None".to_string(), "ambiguous".to_string());
+                return ("N".to_string(), String::new(), "ambiguous".to_string());
             }
         };
 
@@ -342,7 +341,7 @@ fn determine_bases_and_base_type_single_sample(genotype: &String, ref_base : &St
 
         // Ambiguous bases
         if(gt_base == "N") || (gt_base == ".") || (gt_base == "*") {
-            return ("N".to_string(), "None".to_string(), "ambiguous".to_string());
+            return ("N".to_string(), String::new(), "ambiguous".to_string());
         }
 
         // save the bases

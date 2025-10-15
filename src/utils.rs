@@ -4,7 +4,8 @@ use std::fs::File;
 use std::path::Path;
 use std::process::{Command, Stdio};
 use which::which;
-
+use std::collections::{HashSet};
+use std::io::{Write};
 
 pub fn check_r_installed() -> bool {
     Command::new("Rscript")
@@ -22,6 +23,7 @@ pub fn check_r_installed() -> bool {
 pub fn run_fasttree_on_fastas(
     output_dir: &str,
     percents: &[usize],
+    settings_str: &str,
     logger: &Logger,
     fasttree_bin: Option<&str>,
 ) {
@@ -40,8 +42,8 @@ pub fn run_fasttree_on_fastas(
     logger.information(&format!("Using FastTree binary: {}", fasttree_exe.display()));
 
     for percent in percents {
-        let fasta_file = format!("{}/percent_{}.fasta", output_dir, percent);
-        let tree_file = format!("{}/percent_{}-FastTree.tree", output_dir, percent);
+        let fasta_file = format!("{}/percent_{}-{}.fasta", output_dir, percent, settings_str);
+        let tree_file = format!("{}/percent_{}-{}-FastTree.tree", output_dir, percent, settings_str);
 
         if !Path::new(&fasta_file).exists() {
             logger.warning(&format!(
@@ -296,4 +298,36 @@ message("Saved plots to: ", output_prefix, ".png and .pdf")
 
     // Optional: clean up
     // let _ = std::fs::remove_file(script_path);
+}
+
+/// Ensures that a header line "##{contig}" is written once per contig.
+///
+/// Returns `true` if a new header was written, `false` if it was already present.
+pub fn ensure_contig_header(
+    writer: &mut std::io::BufWriter<std::fs::File>,
+    written_contigs: &mut HashSet<(String, String, String)>,
+    sample: &str,
+    base_type: &str,
+    contig: &str,
+) {
+    let key = (sample.to_string(), base_type.to_string(), contig.to_string());
+    if !written_contigs.contains(&key) {
+        writeln!(writer, "##{}", contig).ok();
+        written_contigs.insert(key);
+    }
+}
+
+/// Converts a heterozygous pair (ref, alt) into an IUPAC ambiguity code.
+pub fn iupac_code(ref_base: char, alt_base: char) -> char {
+    match (ref_base, alt_base) {
+        ('A', 'G') | ('G', 'A') => 'R',
+        ('C', 'T') | ('T', 'C') => 'Y',
+        ('A', 'C') | ('C', 'A') => 'M',
+        ('G', 'T') | ('T', 'G') => 'K',
+        ('A', 'T') | ('T', 'A') => 'W',
+        ('C', 'G') | ('G', 'C') => 'S',
+        // If same base or invalid, return one of them
+        (a, b) if a == b => a,
+        _ => 'N',
+    }
 }

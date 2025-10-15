@@ -1,11 +1,11 @@
 use crate::logger::Logger;
+use crate::read_tab;
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::Path;
 use std::fs::File;
 use std::io::{BufRead, BufReader, Write, BufWriter};
 use crate::args::Args;
-use crate::read_vcf::VCFEntry;
 use rayon::prelude::*;
 
 pub fn load_contig_position_counts(file_paths: &[String], logger: &Logger) -> HashMap<String, HashMap<usize, usize>> {
@@ -21,7 +21,7 @@ pub fn load_contig_position_counts(file_paths: &[String], logger: &Logger) -> Ha
 
         let reader = BufReader::new(file);
         let mut current_contig: Option<String> = None;
-        let mut positions_added_in_file = 0;
+        let mut positions_added_in_file = 0usize;
 
         for line in reader.lines() {
             let line = line.expect("Error reading line");
@@ -39,17 +39,22 @@ pub fn load_contig_position_counts(file_paths: &[String], logger: &Logger) -> Ha
                 }
             };
 
+            // Split and tolerate both 2- and 3-column formats
             let parts: Vec<&str> = line.split('\t').collect();
-            if parts.len() != 2 {
-                logger.warning(&format!("Invalid line format: {}", line));
+            if parts.len() < 2 {
+                logger.warning(&format!("Skipping malformed line: {}", line));
                 continue;
             }
 
             let start: usize = parts[0].parse().unwrap_or(0);
-            let stop: usize = parts[1].parse().unwrap_or(start + 1);
+            let stop: usize = parts[1].parse().unwrap_or(start);
+            if start == 0 || stop == 0 {
+                continue;
+            }
 
+            // inclusive range for single-base sites (start == stop)
             let contig_counts = contig_position_counts.entry(contig.clone()).or_default();
-            for pos in start..stop {
+            for pos in start..=stop {
                 *contig_counts.entry(pos).or_insert(0) += 1;
                 positions_added_in_file += 1;
             }
@@ -59,56 +64,32 @@ pub fn load_contig_position_counts(file_paths: &[String], logger: &Logger) -> Ha
     contig_position_counts
 }
 
-/// Builds sample_bases: sample_name → (contig, pos) → base
-pub fn build_sample_bases(vcf_entries_by_sample: &HashMap<String, Vec<VCFEntry>>, logger: &Logger) -> HashMap<String, HashMap<(String, usize), char>> {
-    logger.information("build_sample_bases: sample_name → (contig, pos) → base");
-    
-    let mut sample_bases: HashMap<String, HashMap<(String, usize), char>> = HashMap::new();
-
-    for (sample, entries) in vcf_entries_by_sample {
-        let mut pos_map = HashMap::new();
-
-        for entry in entries {
-            if let Some(base) = entry.samples_to_base1.get(sample) {
-                let base_char = base.chars().next().unwrap_or('N');
-                pos_map.insert((entry.contig.clone(), entry.position), base_char);
-            }
-        }
-
-        sample_bases.insert(sample.clone(), pos_map);
-    }
-
-    sample_bases
-}
-
 /// Either loads the histogram + site position data from disk,
 /// or regenerates it if the file doesn't exist.
 pub fn load_or_generate_histogram(
     variant_counts: &HashMap<String, HashMap<usize, usize>>, 
     reference_counts: &HashMap<String, HashMap<usize, usize>>, 
-    vcf_entries_by_sample: &HashMap<String, Vec<VCFEntry>>,
+    variant_tab_paths: &[String],
     num_vcfs: usize, 
+    rustatools_settings_string: &str,
     args: &Args, 
     rundir: &str,
     logger: &Logger,
 ) -> HashMap<usize, Vec<(String, usize)>> {
-    let settings_str = format!(
-        "m-{}-s-{}-e-{}-z-{}",
-        args.min_read_depth, args.settings, args.exclude_contig, args.restrict_contig
-    );
-    let outfile_path = format!("{}/site_coverage_histogram-{}.tsv", rundir, settings_str);
+
+    let outfile_path = format!("{}/site_coverage_histogram-{}.tsv", rundir, rustatools_settings_string);
     logger.information(&format!("load_or_generate_histogram: Output file = '{}'", outfile_path));
 
     // Check if summary already exists
     if Path::new(&outfile_path).exists() {
         logger.information(&format!("load_or_generate_histogram: Found existing histogram file '{}'. Loading instead of recalculating.", outfile_path));
-        let histogram_positions = load_histogram_positions_from_disk(&rundir, logger);
+        let histogram_positions = load_histogram_positions_from_disk(&rundir, &rustatools_settings_string, logger);
         let histogram = read_histogram_from_file(&outfile_path, logger);
-        visualize_variant_site_coverage(&histogram, args, &rundir, logger);
+        visualize_variant_site_coverage(&histogram, &rustatools_settings_string, &rundir, logger);
         return histogram_positions;
     }
 
-    let sample_bases = build_sample_bases(vcf_entries_by_sample, logger);
+    let sample_bases = read_tab::build_sample_bases_from_tabs(&variant_tab_paths, logger);
 
     // Else: fallback to real calculation
     summarize_variant_site_coverage(
@@ -116,17 +97,19 @@ pub fn load_or_generate_histogram(
         reference_counts,
         &sample_bases,
         num_vcfs,
+        &rustatools_settings_string,
         args,
         &rundir,
         logger,
     )
 }
 
-pub fn summarize_variant_site_coverage(
+fn summarize_variant_site_coverage(
     variant_counts: &HashMap<String, HashMap<usize, usize>>, 
     reference_counts: &HashMap<String, HashMap<usize, usize>>, 
     sample_bases: &HashMap<String, HashMap<(String, usize), char>>,
     num_vcfs: usize, 
+    rustatools_settings_string: &str,
     args: &Args,
     rundir: &str,
     logger: &Logger) -> HashMap<usize, Vec<(String, usize)>> {
@@ -214,7 +197,7 @@ pub fn summarize_variant_site_coverage(
     //}
 
     // Visualise
-    visualize_variant_site_coverage(&histogram, args, &rundir, logger);
+    visualize_variant_site_coverage(&histogram, &rustatools_settings_string, &rundir, logger);
 
     // Output skipped invariant count
     if !args.include_invariants && skipped_invariant_sites > 0 {
@@ -227,7 +210,11 @@ pub fn summarize_variant_site_coverage(
     histogram_positions
 }
 
-fn visualize_variant_site_coverage(histogram: &Vec<(usize, usize)>, args: &Args, rundir: &str, logger: &Logger) {
+fn visualize_variant_site_coverage(
+    histogram: &Vec<(usize, usize)>, 
+    rustatools_settings_string: &str,
+    rundir: &str, 
+    logger: &Logger) {
     logger.output("visualize_variant_site_coverage: ASCII Plot...");
 
     // Find max value safely
@@ -257,8 +244,7 @@ fn visualize_variant_site_coverage(histogram: &Vec<(usize, usize)>, args: &Args,
     }
 
     // outfile
-    let settings_str = format!("m-{}-s-{}-e-{}-z-{}", args.min_read_depth, args.settings, args.exclude_contig, args.restrict_contig);
-    let outfile_path = format!("{}/site_coverage_histogram-{}.tsv", rundir, settings_str);
+    let outfile_path = format!("{}/site_coverage_histogram-{}.tsv", rundir, rustatools_settings_string);
 
     // Skip writing if file exists
     if Path::new(&outfile_path).exists() {
@@ -280,9 +266,13 @@ fn visualize_variant_site_coverage(histogram: &Vec<(usize, usize)>, args: &Args,
 }
 
 /// Writes position files for each % threshold (1-100) into a subfolder.
-pub fn write_site_position_files(histogram_positions: &HashMap<usize, Vec<(String, usize)>>, output_dir: &str, logger: &Logger) {
+pub fn write_site_position_files(
+    histogram_positions: &HashMap<usize, Vec<(String, usize)>>, 
+    output_dir: &str, 
+    settings_str: &str,
+    logger: &Logger) {
 
-    let summary_dir = Path::new(output_dir).join("site_position_files");
+    let summary_dir = Path::new(output_dir).join(format!("site_positions-{}", settings_str));
     logger.information("write_site_position_files: summary_dir");
 
     // Avoid re-generating if already exists
@@ -324,10 +314,11 @@ pub fn write_site_position_files(histogram_positions: &HashMap<usize, Vec<(Strin
 
 fn load_histogram_positions_from_disk(
     output_dir: &str,
+    settings_str: &str,
     logger: &Logger
 ) -> HashMap<usize, Vec<(String, usize)>> {
     let mut histogram_positions: HashMap<usize, Vec<(String, usize)>> = HashMap::new();
-    let site_dir = format!("{}/site_position_files", output_dir);
+    let site_dir = format!("{}/site_positions-{}", output_dir, settings_str);
 
     for percent in 1..=100 {
         let file_path = format!("{}/percent_{}.tab", site_dir, percent);

@@ -8,3 +8,4 @@ clap = { version = "4.5.48", features = ["derive"] }
 colored = "3.0"
 rayon = "1.7"
 which = "8"
+sysinfo = "0.30"

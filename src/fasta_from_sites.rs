@@ -1,21 +1,21 @@
 use crate::logger::Logger;
-use crate::read_vcf::VCFEntry;
 use crate::read_fasta::Fasta;
 use std::collections::{HashMap};
 use std::fs::{File};
 use std::io::{BufWriter, Write};
 use std::path::Path;
 
-pub fn generate_fasta_for_percent_site_set(
+pub fn generate_fasta_for_percent_site_set_cached(
     percent: usize,
     histogram_positions: &HashMap<usize, Vec<(String, usize)>>,
     fasta: &Vec<Fasta>,
-    vcf_entries_by_sample: &HashMap<String, Vec<VCFEntry>>,
+    sample_bases_cache: &HashMap<String, HashMap<(String, usize), char>>,
     target_dir: &str,
-    logger: &Logger,
-) {
-    let out_fasta_path = format!("{}/percent_{}.fasta", target_dir, percent);
-    println!("generate_fasta_for_percent_site_set: output: {}", out_fasta_path);
+    settings_str: &str,
+    logger: &Logger,) {
+
+    let out_fasta_path = format!("{}/percent_{}-{}.fasta", target_dir, percent, settings_str);
+    println!("generate_fasta_for_percent_site_set_cached: output: {}", out_fasta_path);
 
     // Skip if already exists
     if Path::new(&out_fasta_path).exists() {
@@ -23,7 +23,7 @@ pub fn generate_fasta_for_percent_site_set(
         return;
     }
 
-    logger.information(&format!("Generating FASTA for {}% coverage...", percent));
+    logger.information(&format!("generate_fasta_for_percent_site_set_cached: Generating FASTA for {}% coverage...", percent));
 
     // Lookup positions for this threshold
     let positions = match histogram_positions.get(&percent) {
@@ -44,32 +44,6 @@ pub fn generate_fasta_for_percent_site_set(
         }
     }
 
-    // Build a lookup: sample → (contig,pos) → base
-    let mut sample_bases: HashMap<String, HashMap<(String, usize), char>> = HashMap::new();
-    for (sample, entries) in vcf_entries_by_sample {
-        //logger.information(&format!("Processing sample: {}", sample));
-
-        let mut pos_map = HashMap::new();
-        for entry in entries {
-            if let Some(base) = entry.samples_to_base1.get(sample) {
-                let base = base.chars().next().unwrap_or('N');
-                pos_map.insert((entry.contig.clone(), entry.position), base);
-            }
-            else {
-                logger.warning(&format!(
-                    "Sample '{}' not found in entry.samples_to_base1 for contig {}, pos {}",
-                    sample, entry.contig, entry.position
-                ));
-            }
-        }
-        sample_bases.insert(sample.clone(), pos_map);
-    }
-
-    if sample_bases.is_empty() {
-        logger.warning("No sample bases were collected. Skipping FASTA writing.");
-        return;
-    }
-
     // Write directly to file without holding all sequences in memory
     let file = File::create(&out_fasta_path).unwrap_or_else(|e| {
         logger.error(&format!("Could not create FASTA '{}': {}", out_fasta_path, e));
@@ -77,10 +51,8 @@ pub fn generate_fasta_for_percent_site_set(
     });
     let mut writer = BufWriter::new(file);
 
-    // Stream each sample’s sequence
-    for sample in sample_bases.keys() {
+    for (sample, base_map) in sample_bases_cache {
         writeln!(writer, ">{}", sample).unwrap();
-        let base_map = &sample_bases[sample];
 
         for (contig, pos) in positions {
             if let Some(&base) = base_map.get(&(contig.clone(), *pos)) {
@@ -94,5 +66,5 @@ pub fn generate_fasta_for_percent_site_set(
         writeln!(writer).unwrap();
     }
 
-    logger.information(&format!("Saved FASTA to {}", out_fasta_path));
+    logger.information(&format!("generate_fasta_for_percent_site_set: Saved FASTA to {}", out_fasta_path));
 }

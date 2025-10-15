@@ -20,7 +20,7 @@ pub struct Args {
 
     /// Variant filtering mode: 
     /// 1 = homozygous SNPs only,
-    /// 2 = homozygous + heterozygous SNPs,
+    /// 2 = homozygous SNPs + heterozygous positions,
     /// 3 = all variants (including indels)
     #[arg(short='s', long="settings", default_value_t=1, value_parser = clap::value_parser!(u8).range(1..=3))]
     pub settings: u8,
@@ -41,6 +41,10 @@ pub struct Args {
     /// Exclude variants not on contig 
     #[arg(short='z', long="restrict_contig", default_value="n")]
     pub restrict_contig: String,
+
+    /// How to represent heterozygous variants: "alt" (default) or "iupac"
+    #[arg(short='h', long="heterozygosity_encoding", default_value="alt")]
+    pub heterozygosity_encoding: String,
 
     /// Percent threshold to extract sites for tree construction
     #[arg(short='p', long="percent_for_tree", default_value_t=90)]
