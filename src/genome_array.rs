@@ -7,7 +7,7 @@ use std::collections::{HashMap, HashSet};
 use std::fs::File;
 use std::io::{BufWriter, Write};
 
-pub fn fill_genome_hash_array_from_vcf(
+pub fn summarise_vcf_to_tab_files_and_genome_array(
     logger: &Logger, 
     entries: &Vec<VCFEntry>, 
     fasta: &Vec<Fasta>, 
@@ -17,7 +17,7 @@ pub fn fill_genome_hash_array_from_vcf(
         HashMap<String, u8>,                        // base_type → code{
     ) {
 
-    logger.information("fill_genome_hash_array_from_vcf: filling genome arrays for each sample...");
+    logger.information("summarise_vcf_to_tab_files_and_genome_array: filling genome arrays for each sample...");
 
     // sample_name → (contig → Vec<u8>)
     let mut sample_genomes: HashMap<String, HashMap<String, Vec<u8>>> = HashMap::new();
@@ -103,7 +103,7 @@ pub fn fill_genome_hash_array_from_vcf(
 
     // Log summary
     logger.information(&format!(
-        "fill_genome_hash_array_from_vcf: processed {} entries, {} base types, {} samples.",
+        "summarise_vcf_to_tab_files_and_genome_array: processed {} entries, {} base types, {} samples.",
         entries.len(),
         type_to_code.len(),
         sample_genomes.len()

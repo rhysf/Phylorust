@@ -1,5 +1,4 @@
 use crate::logger::Logger;
-use crate::read_tab;
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::Path;
@@ -84,7 +83,7 @@ fn read_single_tab_parallel(
 pub fn load_or_generate_histogram(
     variant_counts: &HashMap<String, HashMap<usize, usize>>, 
     reference_counts: &HashMap<String, HashMap<usize, usize>>, 
-    variant_tab_paths: &[String],
+    sample_bases_cache: &HashMap<String, HashMap<(String, usize), char>>,
     num_vcfs: usize, 
     rustatools_settings_string: &str,
     args: &Args, 
@@ -104,13 +103,11 @@ pub fn load_or_generate_histogram(
         return histogram_positions;
     }
 
-    let sample_bases = read_tab::build_sample_bases_from_tabs(&variant_tab_paths, logger);
-
     // Else: fallback to real calculation
-    summarize_variant_site_coverage(
+    summarise_variant_site_coverage(
         variant_counts,
         reference_counts,
-        &sample_bases,
+        sample_bases_cache,
         num_vcfs,
         &rustatools_settings_string,
         args,
@@ -119,7 +116,7 @@ pub fn load_or_generate_histogram(
     )
 }
 
-fn summarize_variant_site_coverage(
+fn summarise_variant_site_coverage(
     variant_counts: &HashMap<String, HashMap<usize, usize>>, 
     reference_counts: &HashMap<String, HashMap<usize, usize>>, 
     sample_bases: &HashMap<String, HashMap<(String, usize), char>>,
@@ -128,7 +125,7 @@ fn summarize_variant_site_coverage(
     args: &Args,
     rundir: &str,
     logger: &Logger) -> HashMap<usize, Vec<(String, usize)>> {
-    logger.information(&format!("summarize_variant_site_coverage: Flatten contig/pos to global position count across {} VCFs...", num_vcfs));
+    logger.information(&format!("summarise_variant_site_coverage: Flatten contig/pos to global position count across {} VCFs...", num_vcfs));
 
     // Flatten contig/pos to global position count
     let mut position_to_count: HashMap<(String, usize), usize> = HashMap::new();
@@ -144,7 +141,7 @@ fn summarize_variant_site_coverage(
     }
 
     // Phase 1: Build site_to_bases (aggregate base observations across all samples)
-    logger.information(&format!("summarize_variant_site_coverage: Build site to bases aggregate across all samples..."));
+    logger.information(&format!("summarise_variant_site_coverage: Build site to bases aggregate across all samples..."));
     let mut site_to_bases: HashMap<(String, usize), HashSet<char>> = HashMap::new();
 
     for (_, base_map) in sample_bases {
@@ -157,7 +154,7 @@ fn summarize_variant_site_coverage(
     }
 
     // Phase 2: Compute histogram over informative sites only
-    logger.information(&format!("summarize_variant_site_coverage: Compute histogram..."));
+    logger.information(&format!("summarise_variant_site_coverage: Compute histogram..."));
     let results: Vec<(usize, usize, Vec<(String, usize)>, usize)> = (1u32..=100)
         .collect::<Vec<_>>()
         .into_par_iter()

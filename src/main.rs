@@ -114,7 +114,7 @@ fn main() {
         });
 
         // Convert 0->1 for reference, and 0->2 for snps etc. (all variants are now being written to files here. But refs kept for later)
-        let (sample_genomes, base_type_map) = genome_array::fill_genome_hash_array_from_vcf(
+        let (sample_genomes, base_type_map) = genome_array::summarise_vcf_to_tab_files_and_genome_array(
             &logger, 
             &entries, 
             &fasta, 
@@ -147,12 +147,24 @@ fn main() {
     let (variant_paths, reference_paths) = collect_tab_paths_by_settings(&vcf_summary_dir, args.settings, &logger);
 
     // Load those into memory-efficient counters
-    //let variant_counts = read_genome_array_summary::load_contig_position_counts(&variant_paths, &logger);
-    //let reference_counts = read_genome_array_summary::load_contig_position_counts(&reference_paths, &logger);
     let (variant_counts, reference_counts) = join(
         || read_genome_array_summary::load_contig_position_counts_parallel(&variant_paths, logger.clone()),
         || read_genome_array_summary::load_contig_position_counts_parallel(&reference_paths, logger.clone()),
     );
+
+    // gather all ref and variant sites:
+    let mut all_tab_paths = Vec::new();
+    all_tab_paths.extend(reference_paths.clone());
+    all_tab_paths.extend(variant_paths.clone());
+
+    // Precompute and cache the sample_bases map across all percents
+    //let sample_bases_cache = read_tab::build_sample_bases_from_tabs(&all_tab_paths, &logger);
+    let sample_bases_cache = read_tab::build_sample_bases_from_tabs(&variant_paths, &logger);
+    logger.information(&format!(
+        "Cached sample bases for {} isolates ({} total bases).",
+        sample_bases_cache.len(),
+        sample_bases_cache.values().map(|m| m.len()).sum::<usize>()
+    ));
 
     logger.information("──────────────────────────────");
 
@@ -160,17 +172,19 @@ fn main() {
     let histogram_positions = read_genome_array_summary::load_or_generate_histogram(
         &variant_counts, 
         &reference_counts, 
-        &variant_paths, 
+        &sample_bases_cache,
         name_type_locations.len(), 
         &rustatools_analysis_string, 
         &args, 
         &run_dir, 
         &logger);
+
     let histogram_file = format!("{}/site_coverage_histogram-{}.tsv", run_dir, rustatools_analysis_string);
     utils::run_r_plotting_script(&histogram_file, &logger, args.percent_threshold, &run_dir);
 
     // Summarise 
     logger.information("──────────────────────────────");
+
     read_genome_array_summary::write_site_position_files(&histogram_positions, &run_dir, &rustatools_analysis_string, &logger);
 
     // Determine which percentiles to generate FASTAs for
@@ -184,20 +198,6 @@ fn main() {
     } else {
         vec![args.percent_threshold]
     };
-
-    // gather all ref and variant sites:
-    let mut all_tab_paths = Vec::new();
-    all_tab_paths.extend(reference_paths.clone());
-    all_tab_paths.extend(variant_paths.clone());
-
-    // Precompute and cache the sample_bases map across all percents
-    logger.information("Prebuilding sample base cache from .tab files (used for all percentiles)...");
-    let sample_bases_cache = read_tab::build_sample_bases_from_tabs(&all_tab_paths, &logger);
-    logger.information(&format!(
-        "Cached sample bases for {} isolates ({} total bases).",
-        sample_bases_cache.len(),
-        sample_bases_cache.values().map(|m| m.len()).sum::<usize>()
-    ));
 
     // generate FASTA(s)
     for &percent in &percentiles_to_generate {
