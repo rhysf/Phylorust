@@ -22,6 +22,7 @@ use std::sync::{Arc, Mutex};
 use args::Args;
 use logger::Logger;
 use crate::logger::LogExt;
+use crate::read_tab::NameTypeLocation;
 
 fn main() {
 
@@ -164,7 +165,7 @@ fn main() {
     logger.information("──────────────────────────────");
 
     // Dynamically gather all .tab files from subdirectories
-    let (variant_paths, reference_paths) = collect_tab_paths_by_settings(&vcf_summary_dir, args.settings, &logger);
+    let (variant_paths, reference_paths) = collect_tab_paths_by_settings(&vcf_summary_dir, args.settings, &name_type_locations, &logger);
 
     // Load those into memory-efficient counters
     let (variant_counts, reference_counts) = join(
@@ -279,6 +280,7 @@ fn main() {
 pub fn collect_tab_paths_by_settings(
     output_dir: &str,
     settings: u8,
+    name_type_locations: &[NameTypeLocation],
     logger: &Arc<Mutex<Logger>>,
 ) -> (Vec<String>, Vec<String>) {
     let mut variant_paths = Vec::new();
@@ -286,17 +288,33 @@ pub fn collect_tab_paths_by_settings(
 
     logger.lock().unwrap().information(&format!("Collecting .tab files from {}", output_dir));
 
-    for entry in fs::read_dir(output_dir).expect("Failed to read output_dir") {
-        let path = entry.unwrap().path();
-        if path.is_dir() {
-            // scan subdirectory
-            for file in fs::read_dir(&path).expect("Failed to read subdir") {
-                let file_path = file.unwrap().path();
-                if !file_path.is_file() {
-                    continue;
-                }
-                let fname = file_path.file_name().unwrap().to_string_lossy();
+    for nt in name_type_locations {
+        let vcf_path = &nt.location;
+        let vcf_filename = Path::new(vcf_path)
+            .file_name()
+            .expect("Failed to extract VCF filename")
+            .to_string_lossy()
+            .to_string();
 
+        let vcf_summary_subdir = format!("{}/{}", output_dir, vcf_filename);
+
+        if !Path::new(&vcf_summary_subdir).exists() {
+            logger.lock().unwrap().warning(&format!("Skipping sample '{}' (no summary folder found at {})", nt.name, vcf_summary_subdir));
+            continue;
+        }
+
+        // Collect variant and reference tab files inside that sample’s summary
+        for entry in fs::read_dir(&vcf_summary_subdir)
+            .unwrap_or_else(|_| panic!("Cannot read {}", vcf_summary_subdir))
+        {
+            if let Ok(entry) = entry {
+                let file_path = entry.path();
+                let fname = entry
+                    .file_name()
+                    .into_string()
+                    .unwrap_or_else(|_| "unknown".into());
+
+                // --- your previous logic, re-used here ---
                 if fname.starts_with("reference-") {
                     reference_paths.push(file_path.to_string_lossy().to_string());
                 } else {
