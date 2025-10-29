@@ -43,7 +43,7 @@ To build and run Phylorust, you’ll need:
 Clone the repo and install with Cargo:
 
 ```bash
-git clone https://github.com/<your-username>/Phylorust.git
+git clone https://github.com/rhysf/Phylorust.git
 cd Phylorust
 cargo install --path .
 ```
