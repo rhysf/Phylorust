@@ -80,7 +80,7 @@ pub fn build_sample_bases_from_tabs(
             .replace("ambiguous-", "")
             .replace("het_insertion-", "")
             .replace("het_deletion-", "")
-            .replace("het-", "");
+            .replace("heterozygous-", "");
 
         logger.lock().unwrap().information(&format!("build_sample_bases_from_tabs: reading sample '{}'", sample_name));
 

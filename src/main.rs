@@ -31,13 +31,8 @@ fn main() {
 
     logger.lock().unwrap().information(&format!("Phylorust: Using up to {} thread(s)", args.threads));
 
-    let rustatools_summary_string = format!("m-{}-e-{}-z-{}-h-{}",
-        args.min_read_depth,
-        args.exclude_contig,
-        args.restrict_contig,
-        args.heterozygosity_encoding
-    );
-
+    // Record settings
+    let rustatools_summary_string = format!("m-{}-e-{}-z-{}-h-{}", args.min_read_depth, args.exclude_contig, args.restrict_contig, args.heterozygosity_encoding);
     let rustatools_analysis_string = format!("{}-s-{}", rustatools_summary_string, args.settings);
 
     // Base output folder (phylorust_output by default)
@@ -84,10 +79,7 @@ fn main() {
     logger.information("Reading VCFs...");
 
     // Create a custom Rayon pool limited by CLI threads arg
-    let pool = ThreadPoolBuilder::new()
-        .num_threads(args.threads)
-        .build()
-        .unwrap();
+    let pool = ThreadPoolBuilder::new().num_threads(args.threads).build().unwrap();
 
     pool.install(|| {
         name_type_locations.par_iter().for_each(|name_type_location| {
@@ -102,10 +94,7 @@ fn main() {
             // Skip if already written
             if Path::new(&vcf_summary_subdir).exists() {
                 let l = logger.lock().unwrap();
-                l.warning(&format!(
-                    "Skipping genome/region output for {} — output folder already exists.",
-                    vcf_summary_subdir
-                ));
+                l.warning(&format!("Skipping genome/region output for {} — output folder already exists.", vcf_summary_subdir));
                 return;
             }
 
@@ -130,8 +119,7 @@ fn main() {
                 &fasta,
                 &vcf_summary_subdir,
                 &args,
-                &logger.lock().unwrap(),
-            );
+                &logger.lock().unwrap());
 
             // Write reference/ambiguous regions
             for (sample_name, contigs) in &sample_genomes {
@@ -181,11 +169,7 @@ fn main() {
     // Precompute and cache the sample_bases map across all percents
     //let sample_bases_cache = read_tab::build_sample_bases_from_tabs(&all_tab_paths, &logger);
     let sample_bases_cache = read_tab::build_sample_bases_from_tabs(&variant_paths, &logger);
-    logger.information(&format!(
-        "Cached sample bases for {} isolates ({} total bases).",
-        sample_bases_cache.len(),
-        sample_bases_cache.values().map(|m| m.len()).sum::<usize>()
-    ));
+    logger.information(&format!("Cached sample bases for {} isolates ({} total bases).", sample_bases_cache.len(), sample_bases_cache.values().map(|m| m.len()).sum::<usize>()));
 
     logger.information("──────────────────────────────");
 
@@ -212,10 +196,7 @@ fn main() {
     let percentiles_to_generate: Vec<usize> = if args.generate_fastas == "all" {
         (1..=100).collect()
     } else if !args.generate_fastas.trim().is_empty() {
-        args.generate_fastas
-            .split(',')
-            .filter_map(|s| s.trim().parse::<usize>().ok())
-            .collect()
+        args.generate_fastas.split(',').filter_map(|s| s.trim().parse::<usize>().ok()).collect()
     } else {
         vec![args.percent_threshold]
     };
@@ -283,6 +264,7 @@ pub fn collect_tab_paths_by_settings(
     name_type_locations: &[NameTypeLocation],
     logger: &Arc<Mutex<Logger>>,
 ) -> (Vec<String>, Vec<String>) {
+
     let mut variant_paths = Vec::new();
     let mut reference_paths = Vec::new();
 
@@ -290,12 +272,7 @@ pub fn collect_tab_paths_by_settings(
 
     for nt in name_type_locations {
         let vcf_path = &nt.location;
-        let vcf_filename = Path::new(vcf_path)
-            .file_name()
-            .expect("Failed to extract VCF filename")
-            .to_string_lossy()
-            .to_string();
-
+        let vcf_filename = Path::new(vcf_path).file_name().expect("Failed to extract VCF filename").to_string_lossy().to_string();
         let vcf_summary_subdir = format!("{}/{}", output_dir, vcf_filename);
 
         if !Path::new(&vcf_summary_subdir).exists() {
@@ -304,24 +281,21 @@ pub fn collect_tab_paths_by_settings(
         }
 
         // Collect variant and reference tab files inside that sample’s summary
-        for entry in fs::read_dir(&vcf_summary_subdir)
-            .unwrap_or_else(|_| panic!("Cannot read {}", vcf_summary_subdir))
-        {
+        for entry in fs::read_dir(&vcf_summary_subdir).unwrap_or_else(|_| panic!("Cannot read {}", vcf_summary_subdir)) {
             if let Ok(entry) = entry {
                 let file_path = entry.path();
-                let fname = entry
-                    .file_name()
-                    .into_string()
-                    .unwrap_or_else(|_| "unknown".into());
+                let fname = entry.file_name().into_string().unwrap_or_else(|_| "unknown".into());
 
-                // --- your previous logic, re-used here ---
+                // Save the reference base
                 if fname.starts_with("reference-") {
                     reference_paths.push(file_path.to_string_lossy().to_string());
-                } else {
+                } 
+                // Variant/ambiguity
+                else {
                     let include_variant = match settings {
                         1 => fname.starts_with("snp-"),
                         2 => fname.starts_with("snp-") || fname.starts_with("heterozygous-"),
-                        3 => !fname.starts_with("reference-") && !fname.starts_with("ambiguous-"),
+                        3 => !fname.starts_with("ambiguous-"),
                         _ => false,
                     };
                     if include_variant {
@@ -332,11 +306,7 @@ pub fn collect_tab_paths_by_settings(
         }
     }
 
-    logger.lock().unwrap().information(&format!(
-        "Collected {} reference and {} variant tab files",
-        reference_paths.len(),
-        variant_paths.len()
-    ));
+    logger.lock().unwrap().information(&format!("Collected {} reference and {} variant tab files", reference_paths.len(), variant_paths.len()));
 
     (variant_paths, reference_paths)
 }

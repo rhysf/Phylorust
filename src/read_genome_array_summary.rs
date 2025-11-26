@@ -69,10 +69,7 @@ fn read_single_tab_parallel(
     }
 
     let l = logger.lock().unwrap();
-    l.information(&format!(
-        "load_contig_position_counts_parallel: Positions added from {}: {}",
-        path, positions_added_in_file
-    ));
+    l.information(&format!("read_single_tab_parallel: Positions added from {}: {}", path, positions_added_in_file));
 
     contig_position_counts
 }
