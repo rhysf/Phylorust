@@ -1,3 +1,4 @@
+.DS_Store
 /target
 /phylorust_output
 plot_histogram.R
