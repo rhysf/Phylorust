@@ -26,7 +26,7 @@ pub struct Args {
     #[arg(short='s', long="settings", default_value_t=1, value_parser = clap::value_parser!(u8).range(1..=3))]
     pub settings: u8,
 
-    /// Include invariant sites in downstream analysis (optional flag)
+    /// Keep invariant sites among the candidate variant positions
     /// Default = false (invariant sites excluded)
     #[arg(long = "include_invariants", default_value_t = false, action)]
     pub include_invariants: bool,

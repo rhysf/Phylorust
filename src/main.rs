@@ -2,7 +2,7 @@ use clap::Parser;
 use std::fs::{self};
 use std::process;
 use std::path::Path;
-use std::collections::{HashSet, HashMap};
+use std::collections::{HashMap, HashSet};
 //use sysinfo::{System};
 
 mod args;
@@ -14,7 +14,6 @@ mod read_genome_array_summary;
 mod read_tab;
 mod read_vcf;
 mod utils;
-use rayon::join;
 use rayon::prelude::*;
 use rayon::ThreadPoolBuilder;
 use std::sync::{Arc, Mutex};
@@ -32,8 +31,9 @@ fn main() {
     logger.lock().unwrap().information(&format!("Phylorust: Using up to {} thread(s)", args.threads));
 
     // Record settings
-    let rustatools_summary_string = format!("m-{}-e-{}-z-{}-h-{}", args.min_read_depth, args.exclude_contig, args.restrict_contig, args.heterozygosity_encoding);
-    let rustatools_analysis_string = format!("{}-s-{}", rustatools_summary_string, args.settings);
+    let rustatools_summary_string = format!("calls-v2-m-{}-e-{}-z-{}-h-{}", args.min_read_depth, args.exclude_contig, args.restrict_contig, args.heterozygosity_encoding);
+    let invariant_suffix = if args.include_invariants { "-invariants" } else { "" };
+    let rustatools_analysis_string = format!("{}-s-{}{}", rustatools_summary_string, args.settings, invariant_suffix);
 
     // Base output folder (phylorust_output by default)
     fs::create_dir_all(&args.output_dir).unwrap_or_else(|error|{
@@ -59,14 +59,20 @@ fn main() {
     logger.information(&format!("Output directories: vcf_summaries={}, run_dir={}", vcf_summary_dir, run_dir));
 
     // Read Name Type Location file
-    let name_type_locations = read_tab::read_name_type_location_file(&args.name_type_location_filename, &logger);
-
-    // Make VCF path → tab file sample name
-    let mut rename_map: HashMap<String, String> = HashMap::new();
-    for nt in &name_type_locations {
-        // Keyed by the file path from the tab file
-        rename_map.insert(nt.location.clone(), nt.name.clone());
-    }
+    let mut name_type_locations = read_tab::read_name_type_location_file(&args.name_type_location_filename, &logger);
+    let mut input_paths = HashMap::new();
+    name_type_locations.retain(|input| {
+        let path = Path::new(&input.location);
+        let filename = path.file_name().unwrap().to_owned();
+        match input_paths.insert(filename, path.to_path_buf()) {
+            None => true,
+            Some(previous) if previous == path => false,
+            Some(previous) => {
+                logger.error(&format!("VCFs with the same filename: {} and {}", previous.display(), path.display()));
+                process::exit(1);
+            }
+        }
+    });
 
     // Read FASTA file to memory
     let fasta = read_fasta::read_fasta(args.fasta_filename.clone(), &logger);
@@ -98,11 +104,11 @@ fn main() {
                 return;
             }
 
-            // --- memory snapshot ---
-            //mem_log("Memory in use before processing VCFs");
+            // Publish the cache only after every summary file has been written.
+            let pending_dir = format!("{vcf_summary_subdir}.partial-{}", process::id());
 
             // Read VCF
-            let entries = read_vcf::read_vcf(
+            let (entries, sample_names) = read_vcf::read_vcf(
                 name_type_location, 
                 &mut global_sample_names.lock().unwrap(),
                 &args,
@@ -116,8 +122,9 @@ fn main() {
             // Summarize and write
             let sample_genomes = genome_array::summarise_vcf_to_tab_files_and_genome_array(
                 &entries,
+                &sample_names,
                 &fasta,
-                &vcf_summary_subdir,
+                &pending_dir,
                 &args,
                 &logger.lock().unwrap());
 
@@ -125,7 +132,7 @@ fn main() {
             for (sample_name, contigs) in &sample_genomes {
                 for base_type in ["reference", "ambiguous"] {
                     let code = genome_array::code_for_base_type(base_type);
-                    let outfile = format!("{}/{}-{}.tab", vcf_summary_subdir, base_type, sample_name);
+                    let outfile = format!("{}/{}-{}.tab", pending_dir, base_type, sample_name);
                     genome_array::write_regions_from_genome_array(
                         contigs, 
                         code,
@@ -138,7 +145,17 @@ fn main() {
                 }
             }
 
-            // drop entries
+            if let Err(e) = fs::rename(&pending_dir, &vcf_summary_subdir) {
+                if !Path::new(&vcf_summary_subdir).is_dir() {
+                    logger.error(&format!("Could not publish {vcf_summary_subdir}: {e}"));
+                    process::exit(1);
+                }
+                // Another process published this summary first.
+                if let Err(e) = fs::remove_dir_all(&pending_dir) {
+                    logger.warning(&format!("Could not remove {pending_dir}: {e}"));
+                }
+            }
+
             drop(entries);
             drop(sample_genomes);
 
@@ -152,37 +169,19 @@ fn main() {
 
     logger.information("──────────────────────────────");
 
-    // Dynamically gather all .tab files from subdirectories
-    let (variant_paths, reference_paths) = collect_tab_paths_by_settings(&vcf_summary_dir, args.settings, &name_type_locations, &logger);
-
-    // Load those into memory-efficient counters
-    let (variant_counts, reference_counts) = join(
-        || read_genome_array_summary::load_contig_position_counts(&variant_paths, logger.clone()),
-        || read_genome_array_summary::load_contig_position_counts(&reference_paths, logger.clone()),
+    let summaries = collect_sample_summary_paths(
+        &vcf_summary_dir, args.settings, &name_type_locations, &logger,
     );
+    let sample_calls = read_tab::build_sample_calls(&summaries, args.settings, &logger);
+    logger.information(&format!("Loaded calls for {} isolates.", sample_calls.len()));
 
-    // gather all ref and variant sites:
-    let mut all_tab_paths = Vec::new();
-    all_tab_paths.extend(reference_paths.clone());
-    all_tab_paths.extend(variant_paths.clone());
-
-    // Precompute and cache the sample_bases map across all percents
-    //let sample_bases_cache = read_tab::build_sample_bases_from_tabs(&all_tab_paths, &logger);
-    let sample_bases_cache = read_tab::build_sample_bases_from_tabs(&variant_paths, &logger);
-    logger.information(&format!("Cached sample bases for {} isolates ({} total bases).", sample_bases_cache.len(), sample_bases_cache.values().map(|m| m.len()).sum::<usize>()));
-
-    logger.information("──────────────────────────────");
-
-    // Generate histogram
     let histogram_positions = read_genome_array_summary::load_or_generate_histogram(
-        &variant_counts, 
-        &reference_counts, 
-        &sample_bases_cache,
-        name_type_locations.len(), 
-        &rustatools_analysis_string, 
-        &args, 
-        &run_dir, 
-        &logger);
+        &sample_calls,
+        &rustatools_analysis_string,
+        &args,
+        &run_dir,
+        &logger,
+    );
 
     let histogram_file = format!("{}/site_coverage_histogram-{}.tsv", run_dir, rustatools_analysis_string);
     utils::run_r_plotting_script(&histogram_file, args.percent_threshold, &run_dir, &logger);
@@ -217,8 +216,7 @@ fn main() {
         fasta_from_sites::generate_fasta_for_percent_site_set_cached(
             percent,
             &histogram_positions,
-            &fasta,
-            &sample_bases_cache,
+            &sample_calls,
             &run_dir,
             &rustatools_analysis_string,
             &logger,
@@ -258,55 +256,43 @@ fn main() {
 }
     */
 
-pub fn collect_tab_paths_by_settings(
+fn collect_sample_summary_paths(
     output_dir: &str,
     settings: u8,
     name_type_locations: &[NameTypeLocation],
-    logger: &Arc<Mutex<Logger>>,
-) -> (Vec<String>, Vec<String>) {
-
-    let mut variant_paths = Vec::new();
-    let mut reference_paths = Vec::new();
-
-    logger.lock().unwrap().information(&format!("Collecting .tab files from {}", output_dir));
+    logger: &Arc<Mutex<Logger>>) -> Vec<(Vec<String>, Vec<String>)> {
+    let mut summaries = Vec::new();
 
     for nt in name_type_locations {
-        let vcf_path = &nt.location;
-        let vcf_filename = Path::new(vcf_path).file_name().expect("Failed to extract VCF filename").to_string_lossy().to_string();
-        let vcf_summary_subdir = format!("{}/{}", output_dir, vcf_filename);
-
-        if !Path::new(&vcf_summary_subdir).exists() {
-            logger.lock().unwrap().warning(&format!("Skipping sample '{}' (no summary folder found at {})", nt.name, vcf_summary_subdir));
-            continue;
-        }
-
-        // Collect variant and reference tab files inside that sample’s summary
-        for entry in fs::read_dir(&vcf_summary_subdir).unwrap_or_else(|_| panic!("Cannot read {}", vcf_summary_subdir)) {
-            if let Ok(entry) = entry {
-                let file_path = entry.path();
-                let fname = entry.file_name().into_string().unwrap_or_else(|_| "unknown".into());
-
-                // Save the reference base
-                if fname.starts_with("reference-") {
-                    reference_paths.push(file_path.to_string_lossy().to_string());
-                } 
-                // Variant/ambiguity
-                else {
-                    let include_variant = match settings {
-                        1 => fname.starts_with("snp-"),
-                        2 => fname.starts_with("snp-") || fname.starts_with("heterozygous-"),
-                        3 => !fname.starts_with("ambiguous-"),
-                        _ => false,
-                    };
-                    if include_variant {
-                        variant_paths.push(file_path.to_string_lossy().to_string());
-                    }
+        let vcf_filename = Path::new(&nt.location).file_name().unwrap();
+        let summary_dir = Path::new(output_dir).join(vcf_filename);
+        let entries = fs::read_dir(&summary_dir).unwrap_or_else(|e| {
+            logger.error(&format!("Could not read summaries for '{}': {e}", nt.name));
+            process::exit(1);
+        });
+        let mut variants = Vec::new();
+        let mut references = Vec::new();
+        for entry in entries {
+            let path = entry.expect("Could not read summary directory entry").path();
+            if path.extension().and_then(|ext| ext.to_str()) != Some("tab") {
+                continue;
+            }
+            let filename = path.file_stem().unwrap().to_string_lossy();
+            let Some((kind, _)) = filename.split_once('-') else { continue };
+            match kind {
+                "reference" => references.push(path.to_string_lossy().into_owned()),
+                "snp" => variants.push(path.to_string_lossy().into_owned()),
+                "heterozygous" if settings >= 2 => variants.push(path.to_string_lossy().into_owned()),
+                "insertion" | "deletion" | "het_insertion" | "het_deletion" if settings == 3 => {
+                    variants.push(path.to_string_lossy().into_owned());
                 }
+                _ => {}
             }
         }
+        variants.sort();
+        references.sort();
+        summaries.push((variants, references));
     }
 
-    logger.lock().unwrap().information(&format!("Collected {} reference and {} variant tab files", reference_paths.len(), variant_paths.len()));
-
-    (variant_paths, reference_paths)
+    summaries
 }

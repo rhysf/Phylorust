@@ -1,86 +1,17 @@
 use crate::logger::Logger;
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap};
+use crate::read_tab::SampleCalls;
 use std::fs;
 use std::path::Path;
 use std::fs::File;
 use std::io::{BufRead, BufReader, Write, BufWriter};
 use crate::args::Args;
-use rayon::prelude::*;
 use std::sync::{Arc, Mutex};
-
-pub fn load_contig_position_counts(
-    file_paths: &[String],
-    logger: Arc<Mutex<Logger>>,
-) -> HashMap<String, HashMap<usize, usize>> {
-
-    file_paths
-        .par_iter()
-        .map(|path| read_single_tab_parallel(path, &logger))
-        .reduce(HashMap::new, |mut acc, map| {
-            for (contig, pos_map) in map {
-                let entry = acc.entry(contig).or_insert_with(HashMap::new);
-                for (pos, count) in pos_map {
-                    *entry.entry(pos).or_insert(0) += count;
-                }
-            }
-            acc
-        })
-}
-
-fn read_single_tab_parallel(
-    path: &str,
-    logger: &Arc<Mutex<Logger>>,
-) -> HashMap<String, HashMap<usize, usize>> {
-    let mut contig_position_counts: HashMap<String, HashMap<usize, usize>> = HashMap::new();
-    let file = File::open(path).unwrap_or_else(|e| {
-        let l = logger.lock().unwrap();
-        l.error(&format!("Could not open {}: {}", path, e));
-        std::process::exit(1);
-    });
-
-    let reader = BufReader::new(file);
-    let mut current_contig: Option<String> = None;
-    let mut positions_added_in_file = 0usize;
-
-    for line in reader.lines().flatten() {
-        if line.starts_with("##") {
-            current_contig = Some(line.trim_start_matches("##").to_string());
-            continue;
-        }
-
-        let contig = match &current_contig {
-            Some(c) => c.clone(),
-            None => continue,
-        };
-
-        let parts: Vec<&str> = line.split('\t').collect();
-        if parts.len() != 3 {
-            continue;
-        }
-
-        let start: usize = parts[0].parse().unwrap_or(0);
-        let stop: usize = parts[1].parse().unwrap_or(start);
-        let contig_counts = contig_position_counts.entry(contig.clone()).or_default();
-
-        for pos in start..=stop {
-            *contig_counts.entry(pos).or_insert(0) += 1;
-            positions_added_in_file += 1;
-        }
-    }
-
-    let l = logger.lock().unwrap();
-    l.information(&format!("read_single_tab_parallel: Positions added from {}: {}", path, positions_added_in_file));
-
-    contig_position_counts
-}
 
 /// Either loads the histogram + site position data from disk,
 /// or regenerates it if the file doesn't exist.
 pub fn load_or_generate_histogram(
-    variant_counts: &HashMap<String, HashMap<usize, usize>>, 
-    reference_counts: &HashMap<String, HashMap<usize, usize>>, 
-    sample_bases_cache: &HashMap<String, HashMap<(String, usize), char>>,
-    num_vcfs: usize, 
+    sample_calls: &SampleCalls,
     rustatools_settings_string: &str,
     args: &Args, 
     rundir: &str,
@@ -91,7 +22,10 @@ pub fn load_or_generate_histogram(
     logger.lock().unwrap().information(&format!("load_or_generate_histogram: Output file = '{}'", outfile_path));
 
     // Check if summary already exists
-    if Path::new(&outfile_path).exists() {
+    let site_dir = Path::new(rundir).join(format!("site_positions-{rustatools_settings_string}"));
+    if Path::new(&outfile_path).exists()
+        && (1..=100).all(|percent| site_dir.join(format!("percent_{percent}.tab")).is_file())
+    {
         logger.lock().unwrap().information(&format!("load_or_generate_histogram: Found existing histogram file '{}'. Loading instead of recalculating.", outfile_path));
         let histogram_positions = load_histogram_positions_from_disk(&rundir, &rustatools_settings_string, &logger);
         let histogram = read_histogram_from_file(&outfile_path, &logger);
@@ -101,10 +35,7 @@ pub fn load_or_generate_histogram(
 
     // Else: fallback to real calculation
     summarise_variant_site_coverage(
-        variant_counts,
-        reference_counts,
-        sample_bases_cache,
-        num_vcfs,
+        sample_calls,
         &rustatools_settings_string,
         args,
         &rundir,
@@ -112,107 +43,61 @@ pub fn load_or_generate_histogram(
     )
 }
 
+struct SiteCalls {
+    count: usize,
+    first_base: u8,
+    variable: bool,
+}
+
 fn summarise_variant_site_coverage(
-    variant_counts: &HashMap<String, HashMap<usize, usize>>, 
-    reference_counts: &HashMap<String, HashMap<usize, usize>>, 
-    sample_bases: &HashMap<String, HashMap<(String, usize), char>>,
-    num_vcfs: usize, 
-    rustatools_settings_string: &str,
+    sample_calls: &SampleCalls,
+    settings: &str,
     args: &Args,
     rundir: &str,
-    logger: &Arc<Mutex<Logger>>) -> HashMap<usize, Vec<(String, usize)>> {
-
-    logger.lock().unwrap().information(&format!("summarise_variant_site_coverage: Flatten contig/pos to global position count across {} VCFs...", num_vcfs));
-
-    // Flatten contig/pos to global position count
-    let mut position_to_count: HashMap<(String, usize), usize> = HashMap::new();
-    for (contig, positions) in reference_counts {
-        for (&pos, &count) in positions {
-            *position_to_count.entry((contig.clone(), pos)).or_insert(0) += count;
-        }
-    }
-    for (contig, positions) in variant_counts {
-        for (&pos, &count) in positions {
-            *position_to_count.entry((contig.clone(), pos)).or_insert(0) += count;
-        }
-    }
-
-    // Phase 1: Build site_to_bases (aggregate base observations across all samples)
-    logger.lock().unwrap().information(&format!("summarise_variant_site_coverage: Build site to bases aggregate across all samples..."));
-    let mut site_to_bases: HashMap<(String, usize), HashSet<char>> = HashMap::new();
-
-    for (_, base_map) in sample_bases {
-        for (&(ref contig, pos), &base) in base_map {
-            site_to_bases
-                .entry((contig.clone(), pos))
-                .or_default()
-                .insert(base);
+    logger: &Arc<Mutex<Logger>>,
+) -> HashMap<usize, Vec<(String, usize)>> {
+    let mut called_sites: BTreeMap<&str, BTreeMap<usize, SiteCalls>> = BTreeMap::new();
+    for contigs in sample_calls.values() {
+        for (contig, calls) in contigs {
+            let sites = called_sites.entry(contig).or_default();
+            for (&position, &base) in calls {
+                let site = sites.entry(position).or_insert(SiteCalls {
+                    count: 0,
+                    first_base: base,
+                    variable: false,
+                });
+                site.count += 1;
+                site.variable |= site.first_base != base;
+            }
         }
     }
 
-    // Phase 2: Compute histogram over informative sites only
-    logger.lock().unwrap().information(&format!("summarise_variant_site_coverage: Compute histogram..."));
-    let results: Vec<(usize, usize, Vec<(String, usize)>, usize)> = (1u32..=100)
-        .collect::<Vec<_>>()
-        .into_par_iter()
-        .map(|percent_u32| {
-            let percent = percent_u32 as usize;
-            let threshold = ((percent as f64 / 100.0) * num_vcfs as f64).ceil() as usize;
-            let mut count = 0;
-            let mut sites = Vec::new();
-            let mut skipped = 0;
-
-            for (&(ref contig, pos), &total_count) in position_to_count.iter() {
-                if total_count < threshold {
+    let mut histogram = Vec::new();
+    let mut histogram_positions = HashMap::new();
+    let mut skipped_invariant_sites = 0;
+    for percent in 1..=100 {
+        let threshold = (percent * sample_calls.len()).div_ceil(100);
+        let mut positions = Vec::new();
+        for (&contig, sites) in &called_sites {
+            for (&position, site) in sites {
+                if site.count < threshold {
                     continue;
                 }
-
-                if let Some(bases) = site_to_bases.get(&(contig.clone(), pos)) {
-                    if bases.len() > 1 {
-                        count += 1;
-                        sites.push((contig.clone(), pos));
-                    } else if percent == 100 {
-                        skipped += 1;
-                    }
+                if site.variable || args.include_invariants {
+                    positions.push((contig.to_owned(), position));
+                } else if percent == 100 {
+                    skipped_invariant_sites += 1;
                 }
             }
-
-            (percent, count, sites, skipped)
-        })
-        .collect();
-
-    let mut histogram: Vec<(usize, usize)> = Vec::new();
-    let mut histogram_positions: HashMap<usize, Vec<(String, usize)>> = HashMap::new();
-    let mut skipped_invariant_sites = 0;
-
-    for (percent, count, positions, skipped) in results {
-        histogram.push((percent, count));
-        histogram_positions.insert(percent, positions);
-
-        if percent == 100 {
-            skipped_invariant_sites = skipped;
         }
+        histogram.push((percent, positions.len()));
+        histogram_positions.insert(percent, positions);
     }
 
-    // Ensure histogram is sorted by percent
-    histogram.sort_by_key(|(p, _)| *p);
-
-    // Debug print of nonzero bins
-    //logger.information("Histogram debug (nonzero bins):");
-    //for (percent, count) in &histogram {
-    //    if *count > 0 {
-    //        logger.information(&format!("  {}% => {}", percent, count));
-    //    }
-    //}
-
-    // Visualise
-    visualize_variant_site_coverage(&histogram, &rustatools_settings_string, &rundir, logger);
-
-    // Output skipped invariant count
-    if !args.include_invariants && skipped_invariant_sites > 0 {
+    visualize_variant_site_coverage(&histogram, settings, rundir, logger);
+    if skipped_invariant_sites > 0 {
         logger.lock().unwrap().output(&format!(
-            "\nNote: {} invariant-only positions were skipped (use --include_invariants to include them)",
-            skipped_invariant_sites
+            "\n{skipped_invariant_sites} fully called candidate positions were invariant."
         ));
     }
 
@@ -227,11 +112,7 @@ fn visualize_variant_site_coverage(
     logger.lock().unwrap().output("visualize_variant_site_coverage: ASCII Plot...");
 
     // Find max value safely
-    let max_val = histogram.first().map(|(_, v)| *v).unwrap_or(1) as f64;
-    if max_val <= 0.0 {
-        logger.lock().unwrap().warning("Histogram counts are all zero, skipping ASCII plot.");
-        return;
-    }
+    let max_val = histogram.first().map(|(_, v)| *v).unwrap_or(0).max(1) as f64;
 
     for (percent, count) in histogram {
         // Show 100%, 1%, and every 10% step
@@ -261,7 +142,8 @@ fn visualize_variant_site_coverage(
         return;
     }
 
-    let file = File::create(&outfile_path).unwrap_or_else(|e| {
+    let pending = Path::new(&outfile_path).with_extension(format!("partial-{}", std::process::id()));
+    let file = File::create(&pending).unwrap_or_else(|e| {
         logger.lock().unwrap().error(&format!("Could not create histogram file '{}': {}", outfile_path, e));
         std::process::exit(1);
     });
@@ -271,6 +153,8 @@ fn visualize_variant_site_coverage(
     for (percent, count) in histogram {
         writeln!(writer, "{}\t{}", percent, count).unwrap();
     }
+    writer.flush().unwrap();
+    fs::rename(pending, &outfile_path).expect("Cannot publish histogram");
     logger.lock().unwrap().output(&format!("Saved histogram to: {}\n", outfile_path));
 }
 
@@ -284,32 +168,25 @@ pub fn write_site_position_files(
     let summary_dir = Path::new(output_dir).join(format!("site_positions-{}", settings_str));
     logger.lock().unwrap().information("write_site_position_files: summary_dir");
 
-    // Avoid re-generating if already exists
-    if summary_dir.exists() {
-        logger.lock().unwrap().warning("Site position subfolder already exists. Skipping generation of tab files.");
-        return;
-    } else {
-        fs::create_dir_all(&summary_dir).expect("Failed to create site_position_files folder");
-    }
+    fs::create_dir_all(&summary_dir).expect("Failed to create site position folder");
 
     for (percent, positions) in histogram_positions {
         let file_path = summary_dir.join(format!("percent_{}.tab", percent));
 
         // Skip if file already exists
         if file_path.exists() {
-            logger.lock().unwrap().warning(&format!("File already exists for percent {} — skipping.", percent));
             continue;
         }
 
-        let mut writer = std::fs::File::create(&file_path).expect("Cannot write site file");
-        let mut contig_map: HashMap<String, Vec<usize>> = HashMap::new();
+        let pending = file_path.with_extension(format!("partial-{}", std::process::id()));
+        let mut writer = BufWriter::new(File::create(&pending).expect("Cannot write site file"));
+        let mut contig_map: BTreeMap<&str, Vec<usize>> = BTreeMap::new();
 
         // Group by contig
         for (contig, pos) in positions {
-            contig_map.entry(contig.clone()).or_default().push(*pos);
+            contig_map.entry(contig).or_default().push(*pos);
         }
 
-        use std::io::Write;
         for (contig, mut positions) in contig_map {
             positions.sort();
             writeln!(writer, "##{}", contig).unwrap();
@@ -317,6 +194,8 @@ pub fn write_site_position_files(
                 writeln!(writer, "{}", pos).unwrap();
             }
         }
+        writer.flush().unwrap();
+        fs::rename(pending, file_path).expect("Cannot publish site file");
     }
     logger.lock().unwrap().output("All site position files written to site_position_files/");
 }

@@ -3,7 +3,7 @@ use std::fs::{self};
 use std::process;
 use std::path::Path;
 use std::fs::File;
-use std::collections::{HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::io::{BufRead, BufReader};
 use std::sync::{Arc, Mutex};
 
@@ -56,80 +56,123 @@ pub fn read_name_type_location_file(file : &str, logger: &Arc<Mutex<Logger>>) ->
     return name_type_locations;
 }
 
-/// Builds sample_bases from the .tab summary files: sample_name → (contig, pos) → base
-pub fn build_sample_bases_from_tabs(
-    variant_tab_paths: &[String],
+/// One encoded call per sample, contig, and position.
+pub type SampleCalls = BTreeMap<String, HashMap<String, HashMap<usize, u8>>>;
+
+pub fn build_sample_calls(
+    summaries: &[(Vec<String>, Vec<String>)],
+    settings: u8,
     logger: &Arc<Mutex<Logger>>,
-) -> HashMap<String, HashMap<(String, usize), char>> {
+) -> SampleCalls {
+    let mut calls = SampleCalls::new();
+    let mut candidates: HashMap<String, BTreeSet<usize>> = HashMap::new();
+    let mut reference_paths = Vec::new();
 
-    logger.lock().unwrap().information("build_sample_bases_from_tabs: rebuilding sample bases from .tab files");
-    let mut sample_bases: HashMap<String, HashMap<(String, usize), char>> = HashMap::new();
+    for (variants, references) in summaries {
+        let mut names = HashMap::new();
+        for path in references.iter().chain(variants) {
+            let filename = Path::new(path).file_stem().unwrap().to_string_lossy();
+            let (_, raw_name) = filename.split_once('-').unwrap();
+            names.entry(raw_name.to_owned()).or_insert_with(|| {
+                let mut name = raw_name.to_owned();
+                let mut suffix = 1;
+                while calls.contains_key(&name) {
+                    name = format!("{raw_name}-{suffix}");
+                    suffix += 1;
+                }
+                calls.insert(name.clone(), HashMap::new());
+                name
+            });
+        }
 
-    for path in variant_tab_paths {
-        // Derive sample name from filename (everything after the last '-')
-        let filename = Path::new(path)
-            .file_stem()
-            .unwrap()
-            .to_string_lossy()
-            .to_string();
-        let sample_name = filename
-            .replace("reference-", "")
-            .replace("snp-", "")
-            .replace("deletion-", "")
-            .replace("insertion-", "")
-            .replace("ambiguous-", "")
-            .replace("het_insertion-", "")
-            .replace("het_deletion-", "")
-            .replace("heterozygous-", "");
+        for path in variants {
+            let filename = Path::new(path).file_stem().unwrap().to_string_lossy();
+            let (_, raw_name) = filename.split_once('-').unwrap();
+            let sample = calls.get_mut(&names[raw_name]).unwrap();
+            read_summary_rows(path, logger, |contig, start, end, bases| {
+                if settings < 3 && (start != end || bases.len() != 1) {
+                    return;
+                }
+                let positions = candidates.entry(contig.to_owned()).or_default();
+                let sample_contig = sample.entry(contig.to_owned()).or_default();
+                // Summary rows use reference coordinates. Inserted bases have no
+                // corresponding position beyond the end of the row.
+                for (position, base) in (start..=end).zip(bases.bytes()) {
+                    if let Some(base) = normalize_call(base) {
+                        positions.insert(position);
+                        sample_contig.insert(position, base);
+                    }
+                }
+            });
+        }
 
-        logger.lock().unwrap().information(&format!("build_sample_bases_from_tabs: reading sample '{}'", sample_name));
-
-        let file = File::open(path).unwrap_or_else(|e| {
-            logger.lock().unwrap().error(&format!("Could not open {}: {}", path, e));
-            std::process::exit(1);
-        });
-
-        let reader = BufReader::new(file);
-        let mut contig: Option<String> = None;
-        
-        // Get (or create) the map for this sample — don't overwrite!
-        let sample_map = sample_bases
-            .entry(sample_name.clone())
-            .or_insert_with(HashMap::new);
-
-        for line in reader.lines() {
-            let line = line.unwrap();
-
-            if line.starts_with("##") {
-                contig = Some(line.trim_start_matches("##").to_string());
-                continue;
-            }
-            let contig = match &contig {
-                Some(c) => c,
-                None => continue,
-            };
-
-            let parts: Vec<&str> = line.split('\t').collect();
-            if parts.len() != 3 {
-                continue;
-            }
-
-            let start: usize = parts[0].parse().unwrap_or(0);
-            //let stop: usize = parts[1].parse().unwrap_or(start);
-            let bases = parts[2];
-
-            // Write every position within the range
-            for (i, base_char) in bases.chars().enumerate() {
-                let pos = start + i;
-                sample_map.insert((contig.clone(), pos), base_char);
-            }
+        for path in references {
+            let filename = Path::new(path).file_stem().unwrap().to_string_lossy();
+            let (_, raw_name) = filename.split_once('-').unwrap();
+            reference_paths.push((path, names[raw_name].clone()));
         }
     }
 
-    logger.lock().unwrap().information(&format!(
-        "build_sample_bases_from_tabs: collected {} samples total",
-        sample_bases.len()
-    ));
+    for (path, name) in reference_paths {
+        let sample = calls.get_mut(&name).unwrap();
+        read_summary_rows(path, logger, |contig, start, end, bases| {
+            let Some(positions) = candidates.get(contig) else { return };
+            let sample_contig = sample.entry(contig.to_owned()).or_default();
+            for &position in positions.range(start..=end) {
+                if let Some(&base) = bases.as_bytes().get(position - start) {
+                    let base = base.to_ascii_uppercase();
+                    if b"ACGT".contains(&base) {
+                        sample_contig.entry(position).or_insert(base);
+                    }
+                }
+            }
+        });
+    }
 
-    sample_bases
+    calls
+}
+
+fn normalize_call(base: u8) -> Option<u8> {
+    let base = base.to_ascii_uppercase();
+    // Retain IUPAC heterozygous encodings and deletion gaps.
+    b"ACGTRYSWKMBDHV-".contains(&base).then_some(base)
+}
+
+fn read_summary_rows(
+    path: &str,
+    logger: &Arc<Mutex<Logger>>,
+    mut visit: impl FnMut(&str, usize, usize, &str),
+) {
+    let file = File::open(path).unwrap_or_else(|e| {
+        logger.lock().unwrap().error(&format!("Could not open {path}: {e}"));
+        process::exit(1);
+    });
+    let mut reader = BufReader::new(file);
+    let mut line = String::new();
+    let mut contig = String::new();
+
+    loop {
+        line.clear();
+        if reader.read_line(&mut line).unwrap_or_else(|e| {
+            logger.lock().unwrap().error(&format!("Could not read {path}: {e}"));
+            process::exit(1);
+        }) == 0 {
+            break;
+        }
+        let line = line.trim_end_matches(['\r', '\n']);
+        if let Some(name) = line.strip_prefix("##") {
+            contig.clear();
+            contig.push_str(name);
+            continue;
+        }
+
+        let mut fields = line.splitn(3, '\t');
+        let start = fields.next().and_then(|value| value.parse::<usize>().ok());
+        let end = fields.next().and_then(|value| value.parse::<usize>().ok());
+        if let (Some(start), Some(end), Some(bases)) = (start, end, fields.next()) {
+            if !contig.is_empty() && start > 0 && start <= end {
+                visit(&contig, start, end, bases);
+            }
+        }
+    }
 }

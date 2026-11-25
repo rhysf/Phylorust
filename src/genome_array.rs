@@ -38,6 +38,7 @@ pub fn code_for_base_type(bt: &str) -> u8 {
 
 pub fn summarise_vcf_to_tab_files_and_genome_array(
     entries: &[VCFEntry],
+    sample_names: &[String],
     fasta: &[Fasta],
     vcf_summary_subdir: &str,
     args: &Args,
@@ -61,14 +62,9 @@ pub fn summarise_vcf_to_tab_files_and_genome_array(
 
     // 3. Pre-build sample genomes
     let mut sample_genomes: HashMap<String, HashMap<String, Vec<u8>>> = HashMap::new();
-    for entry in entries {
-        for sample_name in entry.samples_to_base_type.keys() {
-            sample_genomes.entry(sample_name.clone()).or_insert_with(|| {
-                fasta.iter()
-                    .map(|f| (f.id.clone(), vec![0u8; f.seq.len()]))
-                    .collect()
-            });
-        }
+    for sample_name in sample_names {
+        let contigs = fasta.iter().map(|f| (f.id.clone(), vec![0; f.seq.len()])).collect();
+        sample_genomes.insert(sample_name.clone(), contigs);
     }
 
     // 4. Process all variants (batched I/O, fewer lookups)
@@ -116,7 +112,7 @@ pub fn summarise_vcf_to_tab_files_and_genome_array(
                 base_type,
                 args.heterozygosity_encoding.as_str(),
             );
-            writeln!(writer, "{}\t{}\t{}", start, stop, bases_string).ok();
+            writeln!(writer, "{}\t{}\t{}", start, stop, bases_string).unwrap();
 
             // --- write numeric code to genome array ---
             if let Some(contigs) = sample_genomes.get_mut(sample_name) {
@@ -138,6 +134,9 @@ pub fn summarise_vcf_to_tab_files_and_genome_array(
     //    logger.information(&format!("  {}: {}", bt, count));
     //}
 
+    for writer in base_type_writers.values_mut() {
+        writer.flush().unwrap();
+    }
     sample_genomes
 }
 
@@ -178,11 +177,14 @@ fn make_variant_tab_row(
                 iupac_code(ref_base, alt_base).to_string()
             }
             _ => {
-                // Default "alt" mode
-                entry.samples_to_base2
-                    .get(sample_name)
-                    .cloned()
-                    .unwrap_or_else(|| entry.alt_base.clone())
+                // For a ref/alt genotype, encode the alternate allele in either GT order.
+                let second = entry.samples_to_base2.get(sample_name);
+                let alt = if second == Some(&entry.ref_base) {
+                    entry.samples_to_base1.get(sample_name)
+                } else {
+                    second
+                };
+                alt.cloned().unwrap_or_else(|| entry.alt_base.clone())
             }
         },
 
@@ -260,6 +262,7 @@ pub fn write_regions_from_genome_array(
     let mut written_contigs: HashSet<(String, String, String)> = HashSet::new();
 
     for (contig, values) in genome {
+        let reference = fasta.iter().find(|f| f.id == *contig);
         let mut start: Option<usize> = None;
         let length = values.len();
 
@@ -276,21 +279,12 @@ pub fn write_regions_from_genome_array(
                     // Write header only once per contig
                     ensure_contig_header(&mut writer, &mut written_contigs, sample_name, base_type, contig);
 
-                    // Extract the reference sequence
-                    let seq = fasta
-                        .iter()
-                        .find(|f| f.id == *contig)
-                        .map(|f| {
-                            f.seq
-                                .chars()
-                                .skip(start_pos)
-                                .take(end - start_pos)
-                                .collect::<String>()
-                        })
-                        .unwrap_or_else(|| "N".repeat(end - start_pos));
-
-                    // Write region to file
-                    writeln!(writer, "{}\t{}\t{}", start_pos + 1, end, seq).ok();
+                    if let Some(seq) = reference.and_then(|f| f.seq.get(start_pos..end)) {
+                        writeln!(writer, "{}\t{}\t{}", start_pos + 1, end, seq).unwrap();
+                    } else {
+                        let seq = "N".repeat(end - start_pos);
+                        writeln!(writer, "{}\t{}\t{}", start_pos + 1, end, seq).unwrap();
+                    }
 
                     start = None;
                 }
@@ -299,6 +293,8 @@ pub fn write_regions_from_genome_array(
             }
         }
     }
+
+    writer.flush().unwrap();
 
     // "write_regions_from_genome_array: wrote {} regions covering {} bases to {}", count_regions, count_bases, outfile_path
     logger.lock().unwrap().information(&format!("write_regions_from_genome_array: wrote {} regions covering {} bases", count_regions, count_bases));
